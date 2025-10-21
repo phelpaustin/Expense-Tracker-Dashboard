@@ -47,17 +47,37 @@ def sidebar_add_expense(df, save_fn):
         item = st.text_input("Item")
         shop = st.text_input("Shop")
         brand = st.text_input("Brand", "")
-        quantity = st.number_input("Quantity", min_value=0.0, step=0.01)
+
+        # 👇 Manually typed quantity
+        quantity_str = st.text_input("Quantity")
+        try:
+            quantity = float(quantity_str) if quantity_str else 0.0
+        except ValueError:
+            st.warning("⚠️ Please enter a valid number for quantity.")
+            quantity = 0.0
+
         unit = st.text_input("Unit", "Count")
 
         currency = st.selectbox("Currency", ["SEK", "INR"])
         if currency == "INR":
             rate = get_exchange_rate("INR", "SEK")
-            amount_inr = st.number_input("Amount in INR", min_value=0.0)
+            # 👇 Manual amount entry
+            amount_inr_str = st.text_input("Amount in INR")
+            try:
+                amount_inr = float(amount_inr_str) if amount_inr_str else 0.0
+            except ValueError:
+                st.warning("⚠️ Please enter a valid number for amount in INR.")
+                amount_inr = 0.0
+
             price = round(amount_inr * (rate or 0), 2)
             st.caption(f"Live rate: 1 INR = {rate:.2f} SEK" if rate else "Rate unavailable")
         else:
-            price = st.number_input("Price Paid (SEK)", min_value=0.0)
+            price_str = st.text_input("Price Paid (SEK)")
+            try:
+                price = float(price_str) if price_str else 0.0
+            except ValueError:
+                st.warning("⚠️ Please enter a valid number for price.")
+                price = 0.0
 
         if st.button("Add Expense", use_container_width=True):
             new_row = {
