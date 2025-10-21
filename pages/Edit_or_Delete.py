@@ -25,5 +25,5 @@ else:
 # Back button
 st.sidebar.markdown("---")
 if st.sidebar.button("⬅️ Back to Expense Dashboard"):
-    st.switch_page("main_dashboard_app.py")
+    st.switch_page("Main_Dashboard_App.py")
 

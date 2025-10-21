@@ -55,7 +55,7 @@ if not df_filtered.empty:
         month_num = pd.to_datetime(selected_month, format="%B").month
         df_filtered = df_filtered[df_filtered["Date"].dt.month == month_num]
 
-    st.dataframe(df_filtered, use_container_width=True)
+    st.dataframe(df_filtered, width="stretch")
 else:
     st.info("No expense records available yet.")
 
