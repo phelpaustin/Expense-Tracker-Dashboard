@@ -73,7 +73,8 @@ def save_data(df, sheet=None):
             st.error(f"Failed to save to Google Sheets: {e}")
     else:
         df.to_csv(LOCAL_CSV_FILE, index=False)
-
+    
+    bump_data_version()  # ensures cache invalidation
 
 def import_data(uploaded_file):
     """Return DataFrame from uploaded CSV/XLSX file."""
