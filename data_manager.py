@@ -101,6 +101,26 @@ def export_data_bytes(df, file_type="csv"):
     else:
         return None, None
 
+
+def clean_data(df):
+    """
+    Standardizes and cleans expense data.
+    - Strips whitespace
+    - Normalizes 'Date' to date-only
+    - Ensures consistent column types
+    """
+    import pandas as pd
+
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+    # Trim whitespace from string columns
+    for col in df.select_dtypes(include=["object"]).columns:
+        df[col] = df[col].astype(str).str.strip()
+
+    return df
+
+
 def bump_data_version():
     """Increment version counter so cached data refreshes."""
     st.session_state["data_version"] = st.session_state.get("data_version", 0) + 1

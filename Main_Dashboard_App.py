@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 from config import USE_GOOGLE_SHEETS, DEFAULT_CURRENCY
-from data_manager import init_storage, load_data, save_data, bump_data_version
+from data_manager import init_storage, load_data, save_data, bump_data_version, clean_data
 from ui_components import sidebar_add_expense, filter_section, theme_css
 from charts import kpi_row, category_pie
 from import_export import import_button, export_buttons
@@ -25,50 +25,81 @@ sheet = init_storage()
 version = st.session_state.get("data_version", 0)
 df = load_data(_sheet=sheet, version=version)
 
-# Ensure expected columns always exist
+# Normalize Date column (datetime -> date only)
+if not df.empty and "Date" in df.columns:
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+# Ensure expected columns exist
 expected_cols = ["Date", "ExpenseType", "PricePaid", "Quantity", "PricePerUnit"]
 for c in expected_cols:
     if c not in df.columns:
         df[c] = None
 
+# Reset merge flags on normal load
+if st.session_state.get("merge_complete", False):
+    st.session_state.pop("merge_complete", None)
+if st.session_state.get("merge_complete_flagged", False):
+    st.session_state.pop("merge_complete_flagged", None)
+
 
 # ----------------- LOGGING HELPER -----------------
 def log(msg):
-    """Display logs in the sidebar for debugging."""
     st.sidebar.text(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
 # ----------------- SIDEBAR FEATURES -----------------
 sidebar_add_expense(df, lambda d: save_data(d, sheet))
 df_filtered = filter_section(df)
-imported_df = import_button(existing_columns=df.columns.tolist() if not df.empty else None)
 
 
 # ----------------- IMPORT + MERGE HANDLING -----------------
 log("Import check start")
 
-if imported_df is not None:
-    st.session_state["pending_import_df"] = imported_df
-    st.session_state["merge_ready"] = True
-    log(f"✅ {len(imported_df)} rows ready to merge.")
+# Control import preview visibility
+show_import_ui = not st.session_state.get("merge_complete", False) and not st.session_state.get("merge_complete_flagged", False)
 
+if show_import_ui:
+    imported_df = import_button(existing_columns=df.columns.tolist() if not df.empty else None)
+
+    if imported_df is not None and not imported_df.empty:
+        # Normalize Date column
+        if "Date" in imported_df.columns:
+            imported_df["Date"] = pd.to_datetime(imported_df["Date"], errors="coerce").dt.date
+
+        st.session_state["pending_import_df"] = imported_df
+        st.session_state["merge_ready"] = True
+        log(f"✅ {len(imported_df)} rows ready to merge.")
+
+        # Show preview
+        st.subheader("📄 Preview Imported Data")
+        st.dataframe(imported_df, use_container_width=True)
+else:
+    if st.session_state.get("merge_complete", False):
+        st.sidebar.success("✅ Last import merged successfully.")
+
+
+# Perform merge
 if st.session_state.get("merge_ready", False):
     pending_df = st.session_state.get("pending_import_df", pd.DataFrame())
     if not pending_df.empty:
         try:
             log(f"🚀 Starting merge process with {len(pending_df)} rows.")
             df_combined = pd.concat([df, pending_df], ignore_index=True)
+            df_combined = clean_data(df_combined)
             save_data(df_combined, sheet)
-            log("💾 Data saved successfully.")
-
-            # Invalidate cache and refresh
             st.cache_data.clear()
             bump_data_version()
             st.success("✅ Imported data merged successfully!")
 
-            # Cleanup
+            # Cleanup session
             st.session_state.pop("merge_ready", None)
             st.session_state.pop("pending_import_df", None)
+
+            # Flag to prevent import preview during rerun
+            st.session_state["merge_complete_flagged"] = True
+            st.session_state["merge_complete"] = True
+
+            # Force immediate rerun to remove preview
             st.rerun()
 
         except Exception as e:
@@ -126,7 +157,7 @@ else:
     st.info("No data to display KPIs yet.")
 
 
-# --- Auto-fix: Clean up Date and compute missing PricePerUnit ---
+# --- Auto-fix Date and compute PricePerUnit ---
 if "Date" in df_filtered.columns:
     df_filtered["Date"] = pd.to_datetime(df_filtered["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
@@ -145,7 +176,6 @@ if {"PricePaid", "Quantity", "PricePerUnit"}.issubset(df_filtered.columns):
 
 # ----------------- EXPENSES BY MONTH -----------------
 st.markdown("### 📅 Expenses by Month")
-
 if not df_filtered.empty and "Date" in df_filtered.columns:
     df_filtered["Date"] = pd.to_datetime(df_filtered["Date"], errors="coerce")
     if df_filtered["Date"].notna().any():
@@ -165,7 +195,6 @@ if not df_filtered.empty and "Date" in df_filtered.columns:
             df_filtered = df_filtered[df_filtered["Date"].dt.month == month_num]
 
         df_filtered["Date"] = df_filtered["Date"].dt.strftime("%Y-%m-%d")
-
         st.dataframe(df_filtered, use_container_width=True)
     else:
         st.info("No valid dates found in dataset.")

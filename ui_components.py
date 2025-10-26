@@ -108,55 +108,56 @@ def sidebar_add_expense(df, save_fn):
 # 🔍 FILTERS
 # ====================================================
 def filter_section(df):
-    """Sidebar filters for date, category, shop, etc."""
+    """Sidebar filters for date, category, shop, price, etc."""
+    import streamlit as st
+    import pandas as pd
+
     st.sidebar.markdown("### 🔍 Filters")
 
     if df.empty:
         st.sidebar.info("No data available.")
         return df
 
-    # --- ✅ Ensure Date column is datetime ---
+    # --- Ensure Date column is datetime ---
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
     # Safe unique lists
-    categories = sorted(df["Category"].dropna().unique().tolist())
-    shops = sorted(df["Shop"].dropna().unique().tolist())
+    categories = sorted(df["Category"].dropna().unique().tolist()) if "Category" in df.columns else []
+    shops = sorted(df["Shop"].dropna().unique().tolist()) if "Shop" in df.columns else []
 
     selected_categories = st.sidebar.multiselect("Category", options=categories)
     selected_shops = st.sidebar.multiselect("Shop", options=shops)
 
-    # Determine min/max safely
-    price_max = float(df["PricePaid"].max()) if not df["PricePaid"].isna().all() else 1000.0
-    min_price, max_price = st.sidebar.slider(
-        "Price Range (SEK)", 0.0, price_max,
-        (0.0, price_max)
-    )
+    # Price slider
+    price_max = float(df["PricePaid"].max()) if "PricePaid" in df.columns and not df["PricePaid"].isna().all() else 1000.0
+    min_price, max_price = st.sidebar.slider("Price Range (SEK)", 0.0, price_max, (0.0, price_max))
 
     # --- Date Range Filter ---
-    if df["Date"].notna().any():
+    start_date, end_date = None, None
+    if "Date" in df.columns and df["Date"].notna().any():
         min_date = df["Date"].min().date()
         max_date = df["Date"].max().date()
         start_date, end_date = st.sidebar.date_input("📅 Date Range", [min_date, max_date])
-        df = df[(df["Date"] >= pd.Timestamp(start_date)) & (df["Date"] <= pd.Timestamp(end_date))]
-    else:
-        st.sidebar.info("⚠️ No valid dates found in data.")
+    # If no valid dates, start_date/end_date remain None
 
-    # Apply filters
+    # --- Apply filters ---
     df_filtered = df.copy()
-    if selected_categories:
+
+    if selected_categories and "Category" in df_filtered.columns:
         df_filtered = df_filtered[df_filtered["Category"].isin(selected_categories)]
-    if selected_shops:
+    if selected_shops and "Shop" in df_filtered.columns:
         df_filtered = df_filtered[df_filtered["Shop"].isin(selected_shops)]
-    if start_date and end_date:
+    if start_date and end_date and "Date" in df_filtered.columns:
         df_filtered = df_filtered[
             (df_filtered["Date"].dt.date >= start_date) &
             (df_filtered["Date"].dt.date <= end_date)
         ]
-    df_filtered = df_filtered[
-        (df_filtered["PricePaid"] >= min_price) &
-        (df_filtered["PricePaid"] <= max_price)
-    ]
+    if "PricePaid" in df_filtered.columns:
+        df_filtered = df_filtered[
+            (df_filtered["PricePaid"] >= min_price) &
+            (df_filtered["PricePaid"] <= max_price)
+        ]
 
     return df_filtered
 
