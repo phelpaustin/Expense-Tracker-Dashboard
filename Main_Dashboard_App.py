@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-from config import USE_GOOGLE_SHEETS
+from config import USE_GOOGLE_SHEETS, DEFAULT_CURRENCY
 from data_manager import init_storage, load_data, save_data, bump_data_version
 from ui_components import sidebar_add_expense, filter_section, theme_css
 from charts import kpi_row, category_pie
@@ -25,6 +25,12 @@ sheet = init_storage()
 version = st.session_state.get("data_version", 0)
 df = load_data(_sheet=sheet, version=version)
 
+# Ensure expected columns always exist
+expected_cols = ["Date", "ExpenseType", "PricePaid", "Quantity", "PricePerUnit"]
+for c in expected_cols:
+    if c not in df.columns:
+        df[c] = None
+
 
 # ----------------- LOGGING HELPER -----------------
 def log(msg):
@@ -41,37 +47,28 @@ imported_df = import_button(existing_columns=df.columns.tolist() if not df.empty
 # ----------------- IMPORT + MERGE HANDLING -----------------
 log("Import check start")
 
-# Step 1: If import_button signaled ready_to_merge, store it persistently
 if imported_df is not None:
     st.session_state["pending_import_df"] = imported_df
     st.session_state["merge_ready"] = True
     log(f"✅ {len(imported_df)} rows ready to merge.")
 
-# Step 2: If merge_ready flag is set, perform the merge
 if st.session_state.get("merge_ready", False):
     pending_df = st.session_state.get("pending_import_df", pd.DataFrame())
-
-    if pending_df is not None and not pending_df.empty:
-        log(f"🚀 Starting merge process with {len(pending_df)} rows.")
+    if not pending_df.empty:
         try:
-            # Merge into existing dataset
+            log(f"🚀 Starting merge process with {len(pending_df)} rows.")
             df_combined = pd.concat([df, pending_df], ignore_index=True)
-            log(f"✅ Merge complete: {len(df)} → {len(df_combined)} rows.")
-
-            # Save to sheet or local CSV
             save_data(df_combined, sheet)
-            log("💾 Data saved via save_data().")
+            log("💾 Data saved successfully.")
 
             # Invalidate cache and refresh
             st.cache_data.clear()
             bump_data_version()
             st.success("✅ Imported data merged successfully!")
 
-            # Clean up session state AFTER save
+            # Cleanup
             st.session_state.pop("merge_ready", None)
             st.session_state.pop("pending_import_df", None)
-
-            # Force rerun
             st.rerun()
 
         except Exception as e:
@@ -88,88 +85,100 @@ export_buttons(df)
 
 
 # ----------------- INCOMPLETE ENTRIES HANDLER -----------------
-missing_critical = df[
-    df["Date"].isna() | (df["Date"] == "") |
-    df["ExpenseType"].isna() | (df["ExpenseType"] == "")
-]
+if not df.empty and all(c in df.columns for c in ["Date", "ExpenseType"]):
+    missing_critical = df[
+        df["Date"].isna() | (df["Date"] == "") |
+        df["ExpenseType"].isna() | (df["ExpenseType"] == "")
+    ]
 
-if not missing_critical.empty:
-    with st.expander(f"⚠️ {len(missing_critical)} Incomplete Entries — Click to Review", expanded=False):
-        st.warning(
-            "Some entries are missing **Date** or **Expense Type**. "
-            "These records are excluded from charts and filters until fixed."
-        )
+    if not missing_critical.empty:
+        with st.expander(f"⚠️ {len(missing_critical)} Incomplete Entries — Click to Review", expanded=False):
+            st.warning(
+                "Some entries are missing **Date** or **Expense Type**. "
+                "These records are excluded from charts and filters until fixed."
+            )
 
-        editable_missing = st.data_editor(
-            missing_critical,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="edit_missing_entries"
-        )
+            editable_missing = st.data_editor(
+                missing_critical,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="edit_missing_entries"
+            )
 
-        if st.button("💾 Save Fixed Entries", use_container_width=True):
-            # Remove old incomplete rows
-            df = df.drop(missing_critical.index)
-            # Add updated entries
-            df = pd.concat([df, editable_missing], ignore_index=True)
-            save_data(df, sheet)
-            bump_data_version()
-            st.success("✅ Fixed entries saved successfully!")
-            st.rerun()
+            if st.button("💾 Save Fixed Entries", use_container_width=True):
+                df = df.drop(missing_critical.index)
+                df = pd.concat([df, editable_missing], ignore_index=True)
+                save_data(df, sheet)
+                bump_data_version()
+                st.success("✅ Fixed entries saved successfully!")
+                st.rerun()
+    else:
+        st.sidebar.success("✅ No incomplete entries found.")
 else:
-    st.sidebar.success("✅ No incomplete entries found.")
+    st.sidebar.info("ℹ️ No data or missing expected columns yet.")
 
 
 # ----------------- MAIN DASHBOARD -----------------
 st.markdown("## 📈 Overview")
-kpi_row(df_filtered)
+if not df_filtered.empty:
+    kpi_row(df_filtered)
+else:
+    st.info("No data to display KPIs yet.")
+
 
 # --- Auto-fix: Clean up Date and compute missing PricePerUnit ---
-df_filtered["Date"] = pd.to_datetime(df_filtered["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+if "Date" in df_filtered.columns:
+    df_filtered["Date"] = pd.to_datetime(df_filtered["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-if "PricePerUnit" in df_filtered.columns:
+if {"PricePaid", "Quantity", "PricePerUnit"}.issubset(df_filtered.columns):
     df_filtered["PricePerUnit"] = df_filtered.apply(
-        lambda r: r["PricePaid"] / r["Quantity"]
-        if pd.notna(r.get("Quantity")) and r.get("Quantity") not in [0, None, ""] and pd.isna(r.get("PricePerUnit"))
-        else r.get("PricePerUnit"),
+        lambda r: (
+            r["PricePaid"] / r["Quantity"]
+            if pd.notna(r.get("Quantity"))
+            and r.get("Quantity") not in [0, None, ""]
+            and pd.isna(r.get("PricePerUnit"))
+            else r.get("PricePerUnit")
+        ),
         axis=1
     )
 
-# --- Expenses by Month Section ---
+
+# ----------------- EXPENSES BY MONTH -----------------
 st.markdown("### 📅 Expenses by Month")
 
-if not df_filtered.empty:
+if not df_filtered.empty and "Date" in df_filtered.columns:
     df_filtered["Date"] = pd.to_datetime(df_filtered["Date"], errors="coerce")
-    years = sorted(df_filtered["Date"].dt.year.dropna().unique().tolist(), reverse=True)
-    months = sorted(df_filtered["Date"].dt.month.dropna().unique().tolist())
+    if df_filtered["Date"].notna().any():
+        years = sorted(df_filtered["Date"].dt.year.dropna().unique().tolist(), reverse=True)
+        months = sorted(df_filtered["Date"].dt.month.dropna().unique().tolist())
 
-    # Two filters side by side
-    col_year, col_month = st.columns([1, 1])
-    with col_year:
-        selected_year = st.selectbox("Select Year", years)
-    with col_month:
-        month_names = ["All"] + [pd.Timestamp(2000, m, 1).strftime("%B") for m in months]
-        selected_month = st.selectbox("Select Month", month_names)
+        col_year, col_month = st.columns([1, 1])
+        with col_year:
+            selected_year = st.selectbox("Select Year", years)
+        with col_month:
+            month_names = ["All"] + [pd.Timestamp(2000, m, 1).strftime("%B") for m in months]
+            selected_month = st.selectbox("Select Month", month_names)
 
-    # Apply filters
-    df_filtered = df_filtered[df_filtered["Date"].dt.year == selected_year]
-    if selected_month != "All":
-        month_num = pd.to_datetime(selected_month, format="%B").month
-        df_filtered = df_filtered[df_filtered["Date"].dt.month == month_num]
+        df_filtered = df_filtered[df_filtered["Date"].dt.year == selected_year]
+        if selected_month != "All":
+            month_num = pd.to_datetime(selected_month, format="%B").month
+            df_filtered = df_filtered[df_filtered["Date"].dt.month == month_num]
 
-    # Drop Year column if present
-    df_filtered = df_filtered.drop(columns=[c for c in ["Year"] if c in df_filtered.columns], errors="ignore")
+        df_filtered["Date"] = df_filtered["Date"].dt.strftime("%Y-%m-%d")
 
-    # Final clean Date display
-    df_filtered["Date"] = df_filtered["Date"].dt.strftime("%Y-%m-%d")
-
-    st.dataframe(df_filtered, use_container_width=True)
+        st.dataframe(df_filtered, use_container_width=True)
+    else:
+        st.info("No valid dates found in dataset.")
 else:
     st.info("No expense records available yet.")
 
+
 # ----------------- PIE CHART -----------------
 st.markdown("## 🥧 Spending Breakdown")
-category_pie(df_filtered)
+if not df_filtered.empty:
+    category_pie(df_filtered)
+else:
+    st.info("No spending data to visualize yet.")
 
 
 # ----------------- NAVIGATION BUTTONS -----------------
