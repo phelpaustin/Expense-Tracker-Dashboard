@@ -72,7 +72,7 @@ if show_import_ui:
 
         # Show preview
         st.subheader("📄 Preview Imported Data")
-        st.dataframe(imported_df, use_container_width=True)
+        st.dataframe(imported_df, width="stretch")
 else:
     if st.session_state.get("merge_complete", False):
         st.sidebar.success("✅ Last import merged successfully.")
@@ -132,11 +132,11 @@ if not df.empty and all(c in df.columns for c in ["Date", "ExpenseType"]):
             editable_missing = st.data_editor(
                 missing_critical,
                 num_rows="dynamic",
-                use_container_width=True,
+                width="stretch",
                 key="edit_missing_entries"
             )
 
-            if st.button("💾 Save Fixed Entries", use_container_width=True):
+            if st.button("💾 Save Fixed Entries", width="stretch"):
                 df = df.drop(missing_critical.index)
                 df = pd.concat([df, editable_missing], ignore_index=True)
                 save_data(df, sheet)
@@ -149,65 +149,60 @@ else:
     st.sidebar.info("ℹ️ No data or missing expected columns yet.")
 
 
-# ----------------- MAIN DASHBOARD -----------------
-st.markdown("## 📈 Overview")
-if not df_filtered.empty:
-    kpi_row(df_filtered)
-else:
-    st.info("No data to display KPIs yet.")
+# ----------------- MONTH / YEAR FILTER FIRST -----------------
+st.markdown("### 📅 Select Period")
 
-
-# --- Auto-fix Date and compute PricePerUnit ---
-if "Date" in df_filtered.columns:
-    df_filtered["Date"] = pd.to_datetime(df_filtered["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-
-if {"PricePaid", "Quantity", "PricePerUnit"}.issubset(df_filtered.columns):
-    df_filtered["PricePerUnit"] = df_filtered.apply(
-        lambda r: (
-            r["PricePaid"] / r["Quantity"]
-            if pd.notna(r.get("Quantity"))
-            and r.get("Quantity") not in [0, None, ""]
-            and pd.isna(r.get("PricePerUnit"))
-            else r.get("PricePerUnit")
-        ),
-        axis=1
-    )
-
-
-# ----------------- EXPENSES BY MONTH -----------------
-st.markdown("### 📅 Expenses by Month")
 if not df_filtered.empty and "Date" in df_filtered.columns:
     df_filtered["Date"] = pd.to_datetime(df_filtered["Date"], errors="coerce")
+
     if df_filtered["Date"].notna().any():
         years = sorted(df_filtered["Date"].dt.year.dropna().unique().tolist(), reverse=True)
         months = sorted(df_filtered["Date"].dt.month.dropna().unique().tolist())
 
         col_year, col_month = st.columns([1, 1])
         with col_year:
-            selected_year = st.selectbox("Select Year", years)
+            selected_year = st.selectbox("Select Year", years, key="overview_year")
         with col_month:
             month_names = ["All"] + [pd.Timestamp(2000, m, 1).strftime("%B") for m in months]
-            selected_month = st.selectbox("Select Month", month_names)
+            selected_month = st.selectbox("Select Month", month_names, key="overview_month")
 
-        df_filtered = df_filtered[df_filtered["Date"].dt.year == selected_year]
+        # Filter by selected year/month
+        df_month_filtered = df_filtered[df_filtered["Date"].dt.year == selected_year]
         if selected_month != "All":
             month_num = pd.to_datetime(selected_month, format="%B").month
-            df_filtered = df_filtered[df_filtered["Date"].dt.month == month_num]
-
-        df_filtered["Date"] = df_filtered["Date"].dt.strftime("%Y-%m-%d")
-        st.dataframe(df_filtered, use_container_width=True)
+            df_month_filtered = df_month_filtered[df_month_filtered["Date"].dt.month == month_num]
     else:
+        df_month_filtered = pd.DataFrame()
         st.info("No valid dates found in dataset.")
 else:
+    df_month_filtered = pd.DataFrame()
     st.info("No expense records available yet.")
+
+
+# ----------------- MAIN DASHBOARD (OVERVIEW) -----------------
+st.markdown("## 📈 Overview")
+if not df_month_filtered.empty:
+    kpi_row(df_month_filtered)
+else:
+    st.info("No data to display KPIs for the selected period.")
+
+
+# ----------------- EXPENSES BY MONTH TABLE -----------------
+st.markdown("### 📅 Expenses by Month")
+if not df_month_filtered.empty:
+    df_display = df_month_filtered.copy()
+    df_display["Date"] = df_display["Date"].dt.strftime("%Y-%m-%d")
+    st.dataframe(df_display, width="stretch")
+else:
+    st.info("No expenses recorded for the selected period.")
 
 
 # ----------------- PIE CHART -----------------
 st.markdown("## 🥧 Spending Breakdown")
-if not df_filtered.empty:
-    category_pie(df_filtered)
+if not df_month_filtered.empty:
+    category_pie(df_month_filtered)
 else:
-    st.info("No spending data to visualize yet.")
+    st.info("No spending data to visualize for the selected period.")
 
 
 # ----------------- NAVIGATION BUTTONS -----------------

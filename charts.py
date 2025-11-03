@@ -59,7 +59,7 @@ def category_pie(df):
         title="💸 Spending by Category",
         hole=0.3,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def monthly_spending(df):
@@ -75,7 +75,7 @@ def monthly_spending(df):
         title="📈 Monthly Spending Trend",
         labels={"PricePaid": "SEK"},
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def calendar_heatmap(df):
@@ -98,7 +98,7 @@ def calendar_heatmap(df):
         title="📆 Spending Heatmap (week vs weekday)",
         color_continuous_scale="Blues",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def stacked_area_chart(df):
@@ -122,7 +122,7 @@ def stacked_area_chart(df):
         color="Category",
         title="📊 Monthly Spending by Category (Stacked)",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def multi_year_comparison(df):
@@ -142,4 +142,4 @@ def multi_year_comparison(df):
         barmode="group",
         title="📅 Yearly Comparison by Category",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})

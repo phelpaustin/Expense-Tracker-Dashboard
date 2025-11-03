@@ -79,7 +79,7 @@ def sidebar_add_expense(df, save_fn):
                 st.warning("⚠️ Please enter a valid number for price.")
                 price = 0.0
 
-        if st.button("Add Expense", use_container_width=True):
+        if st.button("Add Expense", width="stretch" ):
             new_row = {
                 "Date": pd.to_datetime(date).strftime("%Y-%m-%d"),
                 "ExpenseType": expense_type,
