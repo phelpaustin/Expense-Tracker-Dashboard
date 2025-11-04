@@ -37,71 +37,130 @@ def theme_css(dark: bool):
 # ➕ ADD EXPENSE
 # ====================================================
 def sidebar_add_expense(df, save_fn):
-    """Sidebar for adding new expense entries."""
-    st.sidebar.markdown("### ➕ Add Expense")
-    with st.sidebar.expander("Add New Expense", expanded=True):
+    """Sidebar for adding multiple expense items under same expense context."""
+    st.sidebar.markdown("### ➕ Add Expense (Multi-Item Mode)")
+
+    with st.sidebar.expander("Add New Expense Batch", expanded=True):
         date = st.date_input("Date")
         expense_type = st.selectbox("Expense Type", ["Goods", "Service"])
-        category = st.text_input("Category")
-        subcategory = st.text_input("Subcategory", "")
-        item = st.text_input("Item")
         shop = st.text_input("Shop")
-        brand = st.text_input("Brand", "")
-
-        # 👇 Manually typed quantity
-        quantity_str = st.text_input("Quantity")
-        try:
-            quantity = float(quantity_str) if quantity_str else 0.0
-        except ValueError:
-            st.warning("⚠️ Please enter a valid number for quantity.")
-            quantity = 0.0
-
-        unit = st.text_input("Unit", "Count")
-
         currency = st.selectbox("Currency", ["SEK", "INR"])
         if currency == "INR":
             rate = get_exchange_rate("INR", "SEK")
-            # 👇 Manual amount entry
-            amount_inr_str = st.text_input("Amount in INR")
-            try:
-                amount_inr = float(amount_inr_str) if amount_inr_str else 0.0
-            except ValueError:
-                st.warning("⚠️ Please enter a valid number for amount in INR.")
-                amount_inr = 0.0
-
-            price = round(amount_inr * (rate or 0), 2)
             st.caption(f"Live rate: 1 INR = {rate:.2f} SEK" if rate else "Rate unavailable")
         else:
-            price_str = st.text_input("Price Paid (SEK)")
-            try:
-                price = float(price_str) if price_str else 0.0
-            except ValueError:
-                st.warning("⚠️ Please enter a valid number for price.")
-                price = 0.0
+            rate = 1.0
 
-        if st.button("Add Expense", width="stretch" ):
-            new_row = {
-                "Date": pd.to_datetime(date).strftime("%Y-%m-%d"),
-                "ExpenseType": expense_type,
-                "Category": category or "Uncategorized",
-                "Subcategory": subcategory,
-                "Item": item,
-                "Brand": brand,
-                "Shop": shop,
-                "PricePaid": price,
-                "Currency": currency,
-                "Quantity": quantity,
-                "QuantityUnit": unit,
-                "PricePerUnit": round(price / quantity, 2) if quantity else 0,
+        st.divider()
+        st.markdown("#### 🧾 Add Items for this Expense")
+
+        # Keep multi-items in session
+        if "multi_items" not in st.session_state:
+            st.session_state["multi_items"] = []
+
+        # Track temporary inputs to clear them later
+        if "temp_inputs" not in st.session_state:
+            st.session_state["temp_inputs"] = {
+                "category": "", "subcategory": "", "item": "", "brand": "",
+                "quantity": "", "unit": "Count", "amount": ""
             }
 
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-            save_fn(df)
-            st.success("✅ Expense Added!")
+        with st.form("add_item_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                category = st.text_input("Category", st.session_state["temp_inputs"]["category"])
+                subcategory = st.text_input("Subcategory", st.session_state["temp_inputs"]["subcategory"])
+                item = st.text_input("Item", st.session_state["temp_inputs"]["item"])
+                brand = st.text_input("Brand", st.session_state["temp_inputs"]["brand"])
+            with col2:
+                quantity_str = st.text_input("Quantity", st.session_state["temp_inputs"]["quantity"])
+                unit = st.text_input("Unit", st.session_state["temp_inputs"]["unit"])
 
-            # 🚀 Trigger reactive reload
-            bump_data_version()
-            st.rerun()
+                # Amount input
+                if currency == "INR":
+                    amount_str = st.text_input("Amount (INR)", st.session_state["temp_inputs"]["amount"])
+                else:
+                    amount_str = st.text_input("Amount (SEK)", st.session_state["temp_inputs"]["amount"])
+
+            submitted_item = st.form_submit_button("➕ Add Item")
+            if submitted_item:
+                try:
+                    quantity = float(quantity_str) if quantity_str else 0.0
+                except ValueError:
+                    st.warning("⚠️ Invalid quantity entered.")
+                    quantity = 0.0
+                try:
+                    amount = float(amount_str) if amount_str else 0.0
+                except ValueError:
+                    st.warning("⚠️ Invalid amount entered.")
+                    amount = 0.0
+
+                price = round(amount * rate, 2)
+                price_per_unit = round(price / quantity, 2) if quantity else 0
+
+                new_item = {
+                    "Category": category or "Uncategorized",
+                    "Subcategory": subcategory,
+                    "Item": item,
+                    "Brand": brand,
+                    "Quantity": quantity,
+                    "QuantityUnit": unit,
+                    "PricePaid": price,
+                    "Currency": currency,
+                    "PricePerUnit": price_per_unit,
+                }
+
+                st.session_state["multi_items"].append(new_item)
+
+                # ✅ Clear form inputs after adding
+                st.session_state["temp_inputs"] = {
+                    "category": "", "subcategory": "", "item": "", "brand": "",
+                    "quantity": "", "unit": "Count", "amount": ""
+                }
+
+                st.success(f"✅ Added: {item} ({price} {currency})")
+                st.rerun()
+
+        # Show added items
+        if st.session_state["multi_items"]:
+            st.markdown("#### 🧮 Items Added So Far")
+            st.dataframe(pd.DataFrame(st.session_state["multi_items"]))
+
+            # 🔹 Display total amount dynamically
+            total_price = sum(i.get("PricePaid", 0) for i in st.session_state["multi_items"])
+            st.markdown(f"### 💰 Total: **{total_price:.2f} {currency}**")
+
+            col_a, col_b = st.sidebar.columns(2)
+            with col_a:
+                if st.button("🗑️ Clear Items", use_container_width=True):
+                    st.session_state["multi_items"].clear()
+                    st.rerun()
+            with col_b:
+                if st.button("💾 Add All Expenses", use_container_width=True):
+                    # Save each as separate row
+                    new_rows = []
+                    for entry in st.session_state["multi_items"]:
+                        row = {
+                            "Date": pd.to_datetime(date).strftime("%Y-%m-%d"),
+                            "ExpenseType": expense_type,
+                            "Shop": shop,
+                            **entry,
+                        }
+                        new_rows.append(row)
+
+                    df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                    save_fn(df)
+                    st.success(f"✅ Added {len(new_rows)} expense entries successfully!")
+
+                    # Clear all after saving
+                    st.session_state["multi_items"].clear()
+                    st.session_state["temp_inputs"] = {
+                        "category": "", "subcategory": "", "item": "", "brand": "",
+                        "quantity": "", "unit": "Count", "amount": ""
+                    }
+
+                    bump_data_version()
+                    st.rerun()
 
 
 # ====================================================
@@ -192,8 +251,8 @@ def inline_edit_table(df, save_fn, sheet=None):
     )
     month_options = months["MonthName"].tolist()
     month_numbers = months["Month"].tolist()
-
     month_map = dict(zip(month_options, month_numbers))
+
     selected_month_name = st.selectbox("🗓️ Select Month", month_options, key="month_select")
     selected_month = month_map[selected_month_name]
 
@@ -206,7 +265,7 @@ def inline_edit_table(df, save_fn, sheet=None):
         st.info("No entries for this month.")
         return
 
-    # --- Editable and Deletable Table ---
+    # --- Editable Table ---
     edited_df = st.data_editor(
         month_df.drop(columns=["Year", "Month", "MonthName"]),
         num_rows="dynamic",  # allows adding/deleting rows
@@ -214,15 +273,24 @@ def inline_edit_table(df, save_fn, sheet=None):
         key=f"edit_{selected_year}_{selected_month}"
     )
 
-    # Detect and handle any changes (added/edited/deleted rows)
+    # Detect and handle any changes
     if not edited_df.equals(month_df.drop(columns=["Year", "Month", "MonthName"])):
         st.info("Unsaved changes detected. Click below to apply them.")
 
         if st.button("💾 Save Changes", key=f"save_{selected_year}_{selected_month}"):
-            # Remove derived columns
+            # Recalculate PricePerUnit if Quantity or PricePaid changed
+            if "PricePaid" in edited_df.columns and "Quantity" in edited_df.columns:
+                edited_df["PricePerUnit"] = edited_df.apply(
+                    lambda x: round(x["PricePaid"] / x["Quantity"], 2)
+                    if pd.notnull(x["PricePaid"]) and pd.notnull(x["Quantity"]) and x["Quantity"] != 0
+                    else 0,
+                    axis=1
+                )
+
+            # Remove derived columns before saving
             df_base = df.drop(columns=["Year", "Month", "MonthName"])
 
-            # Drop old month entries and merge updated ones
+            # Replace entries for this month with updated data
             mask = (df["Year"] == selected_year) & (df["Month"] == selected_month)
             updated_df = pd.concat([df_base[~mask], edited_df], ignore_index=True)
 
