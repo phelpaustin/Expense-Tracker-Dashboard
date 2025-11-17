@@ -225,6 +225,9 @@ def filter_section(df):
 # ✏️ INLINE EDITOR (EDIT / DELETE)
 # ====================================================
 def inline_edit_table(df, save_fn, sheet=None):
+    import streamlit as st
+    import pandas as pd
+
     st.subheader("✏️ Edit or Delete Entries (by Year → Month)")
 
     if df.empty:
@@ -234,51 +237,126 @@ def inline_edit_table(df, save_fn, sheet=None):
     # Ensure Date is datetime
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
-    # Extract year and month
+    # Extract year/month
     df["Year"] = df["Date"].dt.year
     df["Month"] = df["Date"].dt.month
     df["MonthName"] = df["Date"].dt.strftime("%B")
 
-    # --- Year selection ---
+    # ---------------- YEAR & MONTH FILTERS ----------------
+    col_year, col_month = st.columns([1, 1])
+
     years = sorted(df["Year"].dropna().unique().tolist(), reverse=True)
-    selected_year = st.selectbox("📅 Select Year", years, key="year_select")
+    years_display = ["All"] + [str(y) for y in years]
 
-    # --- Month selection ---
-    months = (
-        df[df["Year"] == selected_year][["Month", "MonthName"]]
-        .drop_duplicates()
-        .sort_values("Month")
-    )
-    month_options = months["MonthName"].tolist()
-    month_numbers = months["Month"].tolist()
-    month_map = dict(zip(month_options, month_numbers))
+    with col_year:
+        selected_year = st.selectbox("📅 Select Year", years_display, key="year_select")
 
-    selected_month_name = st.selectbox("🗓️ Select Month", month_options, key="month_select")
-    selected_month = month_map[selected_month_name]
+    if selected_year != "All":
+        months = (
+            df[df["Year"] == int(selected_year)][["Month", "MonthName"]]
+            .drop_duplicates()
+            .sort_values("Month")
+        )
+    else:
+        months = df[["Month", "MonthName"]].drop_duplicates().sort_values("Month")
 
-    # Filter entries for the selected month
-    month_df = df[(df["Year"] == selected_year) & (df["Month"] == selected_month)]
+    month_options = ["All"] + months["MonthName"].tolist()
+    month_map = dict(zip(months["MonthName"], months["Month"]))
 
-    st.markdown(f"### 🧾 Entries for {selected_month_name} {selected_year}")
+    with col_month:
+        selected_month_name = st.selectbox("🗓️ Select Month", month_options, key="month_select")
 
-    if month_df.empty:
-        st.info("No entries for this month.")
+    # ---------------- DEPENDENT FILTERS ----------------
+    st.markdown("### 🔍 Filter by Expense Details")
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+
+    base_df = df.copy()
+
+    # Expense Type
+    with col1:
+        f_exp = st.multiselect(
+            "Expense Type",
+            sorted(base_df["ExpenseType"].dropna().unique()),
+            key="filter_exp"
+        )
+    df1 = base_df[base_df["ExpenseType"].isin(f_exp)] if f_exp else base_df
+
+    # Category
+    with col2:
+        f_cat = st.multiselect(
+            "Category",
+            sorted(df1["Category"].dropna().unique()),
+            key="filter_cat"
+        )
+    df2 = df1[df1["Category"].isin(f_cat)] if f_cat else df1
+
+    # Subcategory
+    with col3:
+        f_sub = st.multiselect(
+            "Subcategory",
+            sorted(df2["Subcategory"].dropna().unique()),
+            key="filter_sub"
+        )
+    df3 = df2[df2["Subcategory"].isin(f_sub)] if f_sub else df2
+
+    # Item
+    with col4:
+        f_item = st.multiselect(
+            "Item",
+            sorted(df3["Item"].dropna().unique()),
+            key="filter_item"
+        )
+    df4 = df3[df3["Item"].isin(f_item)] if f_item else df3
+
+    # Brand
+    with col5:
+        f_brand = st.multiselect(
+            "Brand",
+            sorted(df4["Brand"].dropna().unique()),
+            key="filter_brand"
+        )
+    df5 = df4[df4["Brand"].isin(f_brand)] if f_brand else df4
+
+    # Shop
+    with col6:
+        f_shop = st.multiselect(
+            "Shop",
+            sorted(df5["Shop"].dropna().unique()),
+            key="filter_shop"
+        )
+    df6 = df5[df5["Shop"].isin(f_shop)] if f_shop else df5
+
+    # -------------- FINAL FILTER APPLICATION --------------
+    filtered_df = df6.copy()
+
+    if selected_year != "All":
+        filtered_df = filtered_df[filtered_df["Year"] == int(selected_year)]
+
+    if selected_month_name != "All":
+        filtered_df = filtered_df[filtered_df["Month"] == month_map[selected_month_name]]
+    
+    filtered_df["Date"] = filtered_df["Date"].dt.strftime("%Y-%m-%d")
+
+    st.markdown("### 🧾 Filtered Entries")
+
+    if filtered_df.empty:
+        st.info("No entries match your filters.")
         return
 
-    # --- Editable Table ---
+    # ---------------- EDITABLE TABLE ----------------
     edited_df = st.data_editor(
-        month_df.drop(columns=["Year", "Month", "MonthName"]),
-        num_rows="dynamic",  # allows adding/deleting rows
+        filtered_df.drop(columns=["Year", "Month", "MonthName"]),
+        num_rows="dynamic",
         width="stretch",
-        key=f"edit_{selected_year}_{selected_month}"
+        key="edit_filtered"
     )
 
-    # Detect and handle any changes
-    if not edited_df.equals(month_df.drop(columns=["Year", "Month", "MonthName"])):
-        st.info("Unsaved changes detected. Click below to apply them.")
+    # ---------------- SAVE CHANGES ----------------
+    if not edited_df.equals(filtered_df.drop(columns=["Year", "Month", "MonthName"])):
+        st.warning("Unsaved changes detected!")
 
-        if st.button("💾 Save Changes", key=f"save_{selected_year}_{selected_month}"):
-            # Recalculate PricePerUnit if Quantity or PricePaid changed
+        if st.button("💾 Save Changes", key="save_filtered_btn"):
+            # Auto-recompute PricePerUnit
             if "PricePaid" in edited_df.columns and "Quantity" in edited_df.columns:
                 edited_df["PricePerUnit"] = edited_df.apply(
                     lambda x: round(x["PricePaid"] / x["Quantity"], 2)
@@ -287,15 +365,16 @@ def inline_edit_table(df, save_fn, sheet=None):
                     axis=1
                 )
 
-            # Remove derived columns before saving
             df_base = df.drop(columns=["Year", "Month", "MonthName"])
+            mask = df.index.isin(filtered_df.index)
 
-            # Replace entries for this month with updated data
-            mask = (df["Year"] == selected_year) & (df["Month"] == selected_month)
             updated_df = pd.concat([df_base[~mask], edited_df], ignore_index=True)
 
             save_fn(updated_df, sheet)
-            st.success("✅ Changes saved successfully!")
+            st.success("✅ Saved successfully!")
             st.cache_data.clear()
+
+            from data_manager import bump_data_version
             bump_data_version()
+
             st.rerun()
