@@ -36,7 +36,7 @@ def import_button(existing_columns=None):
             df_import[col] = None
 
     df_import = df_import[expected_cols]
-    df_import["Date"] = pd.to_datetime(df_import["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df_import["Date"] = pd.to_datetime(df_import["Date"], errors="coerce").dt.date
 
     st.markdown("### 👀 Preview Imported Data (Editable)")
     editable_df = st.data_editor(df_import, num_rows="dynamic", width="stretch")

@@ -120,7 +120,7 @@ if not df.empty and all(c in df.columns for c in ["Date", "ExpenseType"]):
     missing_critical = df[
         df["Date"].isna() | (df["Date"] == "") |
         df["ExpenseType"].isna() | (df["ExpenseType"] == "")
-    ]
+    ].copy()
 
     if not missing_critical.empty:
         with st.expander(f"⚠️ {len(missing_critical)} Incomplete Entries — Click to Review", expanded=False):
@@ -128,6 +128,11 @@ if not df.empty and all(c in df.columns for c in ["Date", "ExpenseType"]):
                 "Some entries are missing **Date** or **Expense Type**. "
                 "These records are excluded from charts and filters until fixed."
             )
+
+            if "Date" in missing_critical.columns:
+                missing_critical.loc[:, "Date"] = (
+                    pd.to_datetime(missing_critical["Date"], errors="coerce").dt.date
+                )
 
             editable_missing = st.data_editor(
                 missing_critical,

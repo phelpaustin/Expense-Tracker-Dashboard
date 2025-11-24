@@ -141,7 +141,7 @@ def sidebar_add_expense(df, save_fn):
                     new_rows = []
                     for entry in st.session_state["multi_items"]:
                         row = {
-                            "Date": pd.to_datetime(date).strftime("%Y-%m-%d"),
+                            "Date": pd.to_datetime(date).date(),
                             "ExpenseType": expense_type,
                             "Shop": shop,
                             **entry,
@@ -237,10 +237,13 @@ def inline_edit_table(df, save_fn, sheet=None):
     # Ensure Date is datetime
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
+
     # Extract year/month
     df["Year"] = df["Date"].dt.year
     df["Month"] = df["Date"].dt.month
     df["MonthName"] = df["Date"].dt.strftime("%B")
+
+    df["Date"] = df["Date"].dt.date
 
     # ---------------- YEAR & MONTH FILTERS ----------------
     col_year, col_month = st.columns([1, 1])
@@ -335,7 +338,7 @@ def inline_edit_table(df, save_fn, sheet=None):
     if selected_month_name != "All":
         filtered_df = filtered_df[filtered_df["Month"] == month_map[selected_month_name]]
     
-    filtered_df["Date"] = filtered_df["Date"].dt.strftime("%Y-%m-%d")
+    filtered_df["Date"] = filtered_df["Date"]
 
     st.markdown("### 🧾 Filtered Entries")
 
