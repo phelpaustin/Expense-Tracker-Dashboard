@@ -124,7 +124,7 @@ def sidebar_add_expense(df, save_fn):
         # Show added items
         if st.session_state["multi_items"]:
             st.markdown("#### 🧮 Items Added So Far")
-            st.dataframe(pd.DataFrame(st.session_state["multi_items"]))
+            st.dataframe(pd.DataFrame(st.session_state["multi_items"]), hide_index=True)
 
             # 🔹 Display total amount dynamically
             total_price = sum(i.get("PricePaid", 0) for i in st.session_state["multi_items"])
@@ -351,7 +351,8 @@ def inline_edit_table(df, save_fn, sheet=None):
         filtered_df.drop(columns=["Year", "Month", "MonthName"]),
         num_rows="dynamic",
         width="stretch",
-        key="edit_filtered"
+        key="edit_filtered",
+        hide_index=True
     )
 
     # ---------------- SAVE CHANGES ----------------

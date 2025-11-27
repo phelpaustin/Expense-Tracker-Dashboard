@@ -39,7 +39,7 @@ def import_button(existing_columns=None):
     df_import["Date"] = pd.to_datetime(df_import["Date"], errors="coerce").dt.date
 
     st.markdown("### 👀 Preview Imported Data (Editable)")
-    editable_df = st.data_editor(df_import, num_rows="dynamic", width="stretch")
+    editable_df = st.data_editor(df_import, num_rows="dynamic", width="stretch", hide_index=True)
 
     if st.button("✅ Merge into Main Dataset", width="stretch"):
         st.session_state["pending_import_df"] = editable_df

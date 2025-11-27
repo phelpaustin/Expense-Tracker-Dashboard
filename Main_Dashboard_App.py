@@ -72,7 +72,7 @@ if show_import_ui:
 
         # Show preview
         st.subheader("📄 Preview Imported Data")
-        st.dataframe(imported_df, width="stretch")
+        st.dataframe(imported_df, width="stretch", hide_index=True)
 else:
     if st.session_state.get("merge_complete", False):
         st.sidebar.success("✅ Last import merged successfully.")
@@ -138,7 +138,8 @@ if not df.empty and all(c in df.columns for c in ["Date", "ExpenseType"]):
                 missing_critical,
                 num_rows="dynamic",
                 width="stretch",
-                key="edit_missing_entries"
+                key="edit_missing_entries",
+                hide_index=True
             )
 
             if st.button("💾 Save Fixed Entries", width="stretch"):
@@ -197,7 +198,7 @@ st.markdown("### 📅 Expenses by Month")
 if not df_month_filtered.empty:
     df_display = df_month_filtered.copy()
     df_display["Date"] = df_display["Date"].dt.strftime("%Y-%m-%d")
-    st.dataframe(df_display, width="stretch")
+    st.dataframe(df_display, width="stretch", hide_index=True)
 else:
     st.info("No expenses recorded for the selected period.")
 
