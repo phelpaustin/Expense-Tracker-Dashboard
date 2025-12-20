@@ -1,0 +1,100 @@
+{
+    "categories": [
+        "Alcohol",
+        "Bags",
+        "Cutlery",
+        "Dairy",
+        "Dine-Out",
+        "Fruits",
+        "Furnishing & Decor",
+        "Groceries",
+        "Household",
+        "Juices",
+        "Kitchen Accessories",
+        "Masala",
+        "Meat",
+        "Oil",
+        "Photos",
+        "Picnic Things",
+        "Seafood",
+        "Snacks",
+        "Spices",
+        "Spreads",
+        "Stationary",
+        "Toiletries",
+        "Vegetable"
+    ],
+    "subcategories": {
+        "Alcohol": [
+            "Whiskey"
+        ],
+        "Bags": [],
+        "Cutlery": [],
+        "Dairy": [],
+        "Dine-Out": [
+            "Dinner",
+            "Lunch"
+        ],
+        "Fruits": [],
+        "Furnishing & Decor": [],
+        "Groceries": [
+            "Rice"
+        ],
+        "Household": [],
+        "Juices": [],
+        "Kitchen Accessories": [],
+        "Masala": [],
+        "Meat": [
+            "Chicken",
+            "Pork"
+        ],
+        "Oil": [],
+        "Photos": [],
+        "Picnic Things": [
+            "Grilling Accessories"
+        ],
+        "Seafood": [
+            "Prawns"
+        ],
+        "Snacks": [],
+        "Spices": [],
+        "Spreads": [],
+        "Stationary": [],
+        "Toiletries": [
+            "Cleaning",
+            "Washing"
+        ],
+        "Vegetable": [
+            "Indian Vegetable",
+            "Indian Vegetables"
+        ]
+    },
+    "shops": [
+        "Aiko Sushi",
+        "Apna Bazar Frolunda",
+        "Biltema",
+        "Burger King",
+        "Coop - Stadion",
+        "Coop Jägersro",
+        "ICA MAXI Supermarket Västra Hamnen",
+        "ICA Mobilia",
+        "ICA Värnhem",
+        "Indo-Pak",
+        "Kalra Foods AB",
+        "Lera",
+        "Lidl",
+        "Lucu",
+        "MalmöPhoto Mobilia",
+        "Systembolaget",
+        "Temple Of Spices",
+        "Willys Lund",
+        "Willys Mobilia",
+        "Willys Soderkulla"
+    ],
+    "units": [
+        "Count",
+        "Kg",
+        "Litre",
+        "Meter"
+    ]
+}
