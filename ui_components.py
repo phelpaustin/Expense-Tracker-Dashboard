@@ -2,9 +2,10 @@
 import streamlit as st
 import pandas as pd
 from currency_manager import get_exchange_rate
-from utils import calculate_price_per_unit
-from config import SUPPORTED_CURRENCIES, DEFAULT_CURRENCY
+from utils import calculate_price_per_unit, load_dropdown_options
+from config import SUPPORTED_CURRENCIES, DEFAULT_CURRENCY, Columns
 from data_manager import bump_data_version
+from validators import ExpenseValidator, ValidationError
 
 
 # ====================================================
@@ -40,10 +41,19 @@ def sidebar_add_expense(df, save_fn):
     """Sidebar for adding multiple expense items under same expense context."""
     st.sidebar.markdown("### ➕ Add Expense (Multi-Item Mode)")
 
+    # ---------------- LOAD DROPDOWN DATA ----------------
+    dropdowns = load_dropdown_options()
+    categories = dropdowns.get("categories", [])
+    subcategories_map = dropdowns.get("subcategories", {})
+    shops = dropdowns.get("shops", [])
+    units = dropdowns.get("units", ["Count"])
+
     with st.sidebar.expander("Add New Expense Batch", expanded=True):
         date = st.date_input("Date")
         expense_type = st.selectbox("Expense Type", ["Goods", "Service"])
-        shop = st.text_input("Shop")
+
+        shop = st.selectbox("Shop", options=shops)
+
         currency = st.selectbox("Currency", ["SEK", "INR"])
         if currency == "INR":
             rate = get_exchange_rate("INR", "SEK")
@@ -54,111 +64,212 @@ def sidebar_add_expense(df, save_fn):
         st.divider()
         st.markdown("#### 🧾 Add Items for this Expense")
 
-        # Keep multi-items in session
+        # ---------------- SESSION STATE ----------------
         if "multi_items" not in st.session_state:
             st.session_state["multi_items"] = []
 
-        # Track temporary inputs to clear them later
+        if "selected_category" not in st.session_state:
+            st.session_state["selected_category"] = categories[0] if categories else ""
+
+        if "selected_subcategory" not in st.session_state:
+            st.session_state["selected_subcategory"] = ""
+
         if "temp_inputs" not in st.session_state:
             st.session_state["temp_inputs"] = {
-                "category": "", "subcategory": "", "item": "", "brand": "",
-                "quantity": "", "unit": "Count", "amount": ""
+                "item": "",
+                "brand": "",
+                "quantity": "",
+                "unit": "Count",
+                "amount": ""
             }
 
+        # ---------------- CATEGORY & SUBCATEGORY (OUTSIDE FORM) ----------------
+        category = st.selectbox(
+            "Category",
+            options=categories,
+            key="selected_category"
+        )
+
+        subcategory_options = subcategories_map.get(category, [])
+
+        subcategory = st.selectbox(
+            "Subcategory",
+            options=[""] + subcategory_options,
+            key="selected_subcategory",
+            disabled=len(subcategory_options) == 0
+        )
+
+    # ---------------- ADD ITEM FORM (WITH VALIDATION) ----------------
         with st.form("add_item_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
+
             with col1:
-                category = st.text_input("Category", st.session_state["temp_inputs"]["category"])
-                subcategory = st.text_input("Subcategory", st.session_state["temp_inputs"]["subcategory"])
-                item = st.text_input("Item", st.session_state["temp_inputs"]["item"])
-                brand = st.text_input("Brand", st.session_state["temp_inputs"]["brand"])
+                item = st.text_input(
+                    "Item *", 
+                    st.session_state["temp_inputs"]["item"],
+                    placeholder="e.g., Milk, Bread, Coffee"
+                )
+                brand = st.text_input(
+                    "Brand", 
+                    st.session_state["temp_inputs"]["brand"],
+                    placeholder="Optional"
+                )
+
             with col2:
-                quantity_str = st.text_input("Quantity", st.session_state["temp_inputs"]["quantity"])
-                unit = st.text_input("Unit", st.session_state["temp_inputs"]["unit"])
+                quantity_str = st.text_input(
+                    "Quantity *", 
+                    st.session_state["temp_inputs"]["quantity"],
+                    placeholder="e.g., 1, 2.5, 0.5"
+                )
 
-                # Amount input
-                if currency == "INR":
-                    amount_str = st.text_input("Amount (INR)", st.session_state["temp_inputs"]["amount"])
-                else:
-                    amount_str = st.text_input("Amount (SEK)", st.session_state["temp_inputs"]["amount"])
+                unit = st.selectbox(
+                    "Unit",
+                    options=units,
+                    index=units.index("Count") if "Count" in units else 0
+                )
 
-            submitted_item = st.form_submit_button("➕ Add Item")
+                amount_label = f"Amount ({currency}) *"
+                amount_str = st.text_input(
+                    amount_label, 
+                    st.session_state["temp_inputs"]["amount"],
+                    placeholder="e.g., 25.50"
+                )
+
+            st.caption("* Required fields")
+            submitted_item = st.form_submit_button("➕ Add Item", type="primary")
+
             if submitted_item:
+                # ============ VALIDATION STARTS HERE ============
+                validation_errors = []
+                
+                # Sanitize text inputs
+                item_clean = ExpenseValidator.sanitize_text(item)
+                brand_clean = ExpenseValidator.sanitize_text(brand)
+                
+                # Validate and parse quantity
                 try:
-                    quantity = float(quantity_str) if quantity_str else 0.0
-                except ValueError:
-                    st.warning("⚠️ Invalid quantity entered.")
+                    quantity = ExpenseValidator.validate_numeric_input(
+                        quantity_str,
+                        "Quantity",
+                        min_value=ExpenseValidator.MIN_QUANTITY,
+                        max_value=ExpenseValidator.MAX_QUANTITY
+                    )
+                except ValidationError as e:
+                    validation_errors.append(str(e))
                     quantity = 0.0
+                
+                # Validate and parse amount
                 try:
-                    amount = float(amount_str) if amount_str else 0.0
-                except ValueError:
-                    st.warning("⚠️ Invalid amount entered.")
+                    amount = ExpenseValidator.validate_numeric_input(
+                        amount_str,
+                        "Amount",
+                        min_value=ExpenseValidator.MIN_PRICE,
+                        max_value=ExpenseValidator.MAX_PRICE
+                    )
+                except ValidationError as e:
+                    validation_errors.append(str(e))
                     amount = 0.0
-
-                price = round(amount * rate, 2)
-                price_per_unit = round(price / quantity, 2) if quantity else 0
-
+                
+                # Calculate price in SEK
+                price = round(amount * rate, 2) if amount and rate else 0.0
+                price_per_unit = round(price / quantity, 2) if quantity and quantity > 0 else 0.0
+                
+                # Perform comprehensive validation
+                is_valid, item_errors = ExpenseValidator.validate_expense_item(
+                    item=item_clean,
+                    price=price,
+                    quantity=quantity,
+                    date_value=date,
+                    expense_type=expense_type,
+                    currency=currency,
+                    category=category
+                )
+                
+                # Combine all errors
+                all_errors = validation_errors + item_errors
+                
+                # Display errors or add item
+                if all_errors:
+                    st.error("**Validation Failed:**")
+                    for error in all_errors:
+                        st.error(error)
+                    st.stop()
+                
+                # All validations passed - add item
                 new_item = {
-                    "Category": category or "Uncategorized",
-                    "Subcategory": subcategory,
-                    "Item": item,
-                    "Brand": brand,
-                    "Quantity": quantity,
-                    "QuantityUnit": unit,
-                    "PricePaid": price,
-                    "Currency": currency,
-                    "PricePerUnit": price_per_unit,
+                    Columns.CATEGORY: category or "Uncategorized",
+                    Columns.SUBCATEGORY: subcategory,
+                    Columns.ITEM: item_clean,
+                    Columns.BRAND: brand_clean,
+                    Columns.QUANTITY: quantity,
+                    Columns.QUANTITY_UNIT: unit,
+                    Columns.PRICE_PAID: price,
+                    Columns.CURRENCY: currency,
+                    Columns.PRICE_PER_UNIT: price_per_unit,
                 }
 
                 st.session_state["multi_items"].append(new_item)
 
-                # ✅ Clear form inputs after adding
+                # Reset inputs
                 st.session_state["temp_inputs"] = {
-                    "category": "", "subcategory": "", "item": "", "brand": "",
-                    "quantity": "", "unit": "Count", "amount": ""
+                    "item": "",
+                    "brand": "",
+                    "quantity": "",
+                    "unit": "Count",
+                    "amount": ""
                 }
 
-                st.success(f"✅ Added: {item} ({price} {currency})")
+                st.success(f"✅ Added: {item_clean} ({price:.2f} SEK)")
                 st.rerun()
 
-        # Show added items
+    # ---------------- SHOW ITEMS + SAVE ----------------
         if st.session_state["multi_items"]:
             st.markdown("#### 🧮 Items Added So Far")
             st.dataframe(pd.DataFrame(st.session_state["multi_items"]), hide_index=True)
 
-            # 🔹 Display total amount dynamically
-            total_price = sum(i.get("PricePaid", 0) for i in st.session_state["multi_items"])
-            st.markdown(f"### 💰 Total: **{total_price:.2f} {currency}**")
+            total_price = sum(i.get(Columns.PRICE_PAID, 0) for i in st.session_state["multi_items"])
+            st.markdown(f"### 💰 Total: **{total_price:.2f} SEK**")
 
             col_a, col_b = st.sidebar.columns(2)
+
             with col_a:
-                if st.button("🗑️ Clear Items", use_container_width=True):
+                if st.button("🗑️ Clear Items", width="stretch"):
                     st.session_state["multi_items"].clear()
                     st.rerun()
+
             with col_b:
-                if st.button("💾 Add All Expenses", use_container_width=True):
-                    # Save each as separate row
+                if st.button("💾 Add All Expenses", width="stretch"):
+                    # Validate all items before saving
+                    all_items_df = pd.DataFrame(st.session_state["multi_items"])
+                    all_items_df[Columns.DATE] = date
+                    all_items_df[Columns.EXPENSE_TYPE] = expense_type
+                    all_items_df[Columns.SHOP] = shop
+                    
+                    # Final validation before save
+                    is_valid, errors, _ = ExpenseValidator.validate_dataframe(all_items_df)
+                    
+                    if not is_valid:
+                        st.error("**Cannot save - validation errors found:**")
+                        for error in errors[:5]:
+                            st.error(error)
+                        st.stop()
+                    
+                    # All valid - save
                     new_rows = []
                     for entry in st.session_state["multi_items"]:
                         row = {
-                            "Date": pd.to_datetime(date).date(),
-                            "ExpenseType": expense_type,
-                            "Shop": shop,
+                            Columns.DATE: pd.to_datetime(date).date(),
+                            Columns.EXPENSE_TYPE: expense_type,
+                            Columns.SHOP: shop,
                             **entry,
                         }
                         new_rows.append(row)
 
                     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
                     save_fn(df)
+
                     st.success(f"✅ Added {len(new_rows)} expense entries successfully!")
-
-                    # Clear all after saving
                     st.session_state["multi_items"].clear()
-                    st.session_state["temp_inputs"] = {
-                        "category": "", "subcategory": "", "item": "", "brand": "",
-                        "quantity": "", "unit": "Count", "amount": ""
-                    }
-
                     bump_data_version()
                     st.rerun()
 
@@ -178,44 +289,44 @@ def filter_section(df):
         return df
 
     # --- Ensure Date column is datetime ---
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    if Columns.DATE in df.columns:
+        df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
 
     # Safe unique lists
-    categories = sorted(df["Category"].dropna().unique().tolist()) if "Category" in df.columns else []
-    shops = sorted(df["Shop"].dropna().unique().tolist()) if "Shop" in df.columns else []
+    categories = sorted(df[Columns.CATEGORY].dropna().unique().tolist()) if Columns.CATEGORY in df.columns else []
+    shops = sorted(df[Columns.SHOP].dropna().unique().tolist()) if Columns.SHOP in df.columns else []
 
     selected_categories = st.sidebar.multiselect("Category", options=categories)
     selected_shops = st.sidebar.multiselect("Shop", options=shops)
 
     # Price slider
-    price_max = float(df["PricePaid"].max()) if "PricePaid" in df.columns and not df["PricePaid"].isna().all() else 1000.0
+    price_max = float(df[Columns.PRICE_PAID].max()) if Columns.PRICE_PAID in df.columns and not df[Columns.PRICE_PAID].isna().all() else 1000.0
     min_price, max_price = st.sidebar.slider("Price Range (SEK)", 0.0, price_max, (0.0, price_max))
 
     # --- Date Range Filter ---
     start_date, end_date = None, None
-    if "Date" in df.columns and df["Date"].notna().any():
-        min_date = df["Date"].min().date()
-        max_date = df["Date"].max().date()
+    if Columns.DATE in df.columns and df[Columns.DATE].notna().any():
+        min_date = df[Columns.DATE].min().date()
+        max_date = df[Columns.DATE].max().date()
         start_date, end_date = st.sidebar.date_input("📅 Date Range", [min_date, max_date])
     # If no valid dates, start_date/end_date remain None
 
     # --- Apply filters ---
     df_filtered = df.copy()
 
-    if selected_categories and "Category" in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered["Category"].isin(selected_categories)]
-    if selected_shops and "Shop" in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered["Shop"].isin(selected_shops)]
-    if start_date and end_date and "Date" in df_filtered.columns:
+    if selected_categories and Columns.CATEGORY in df_filtered.columns:
+        df_filtered = df_filtered[df_filtered[Columns.CATEGORY].isin(selected_categories)]
+    if selected_shops and Columns.SHOP in df_filtered.columns:
+        df_filtered = df_filtered[df_filtered[Columns.SHOP].isin(selected_shops)]
+    if start_date and end_date and Columns.DATE in df_filtered.columns:
         df_filtered = df_filtered[
-            (df_filtered["Date"].dt.date >= start_date) &
-            (df_filtered["Date"].dt.date <= end_date)
+            (df_filtered[Columns.DATE].dt.date >= start_date) &
+            (df_filtered[Columns.DATE].dt.date <= end_date)
         ]
-    if "PricePaid" in df_filtered.columns:
+    if Columns.PRICE_PAID in df_filtered.columns:
         df_filtered = df_filtered[
-            (df_filtered["PricePaid"] >= min_price) &
-            (df_filtered["PricePaid"] <= max_price)
+            (df_filtered[Columns.PRICE_PAID] >= min_price) &
+            (df_filtered[Columns.PRICE_PAID] <= max_price)
         ]
 
     return df_filtered
@@ -235,15 +346,15 @@ def inline_edit_table(df, save_fn, sheet=None):
         return
 
     # Ensure Date is datetime
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
 
 
     # Extract year/month
-    df["Year"] = df["Date"].dt.year
-    df["Month"] = df["Date"].dt.month
-    df["MonthName"] = df["Date"].dt.strftime("%B")
+    df["Year"] = df[Columns.DATE].dt.year
+    df["Month"] = df[Columns.DATE].dt.month
+    df["MonthName"] = df[Columns.DATE].dt.strftime("%B")
 
-    df["Date"] = df["Date"].dt.date
+    df[Columns.DATE] = df[Columns.DATE].dt.date
 
     # ---------------- YEAR & MONTH FILTERS ----------------
     col_year, col_month = st.columns([1, 1])
@@ -357,9 +468,22 @@ def inline_edit_table(df, save_fn, sheet=None):
 
     # ---------------- SAVE CHANGES ----------------
     if not edited_df.equals(filtered_df.drop(columns=["Year", "Month", "MonthName"])):
-        st.warning("Unsaved changes detected!")
+        st.warning("⚠️ Unsaved changes detected!")
 
         if st.button("💾 Save Changes", key="save_filtered_btn"):
+            # Validate edited data before saving
+            is_valid, errors, invalid_rows = ExpenseValidator.validate_dataframe(edited_df)
+            
+            if not is_valid:
+                st.error("**Cannot save - validation errors found:**")
+                for error in errors[:10]:
+                    st.error(error)
+                
+                if not invalid_rows.empty:
+                    st.markdown("**Invalid rows:**")
+                    st.dataframe(invalid_rows, hide_index=True)
+                st.stop()
+            
             # Auto-recompute PricePerUnit
             if "PricePaid" in edited_df.columns and "Quantity" in edited_df.columns:
                 edited_df["PricePerUnit"] = edited_df.apply(

@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from config import Columns
 
 # statsmodels optional import handled safely
 try:
@@ -10,14 +11,19 @@ try:
 except Exception:
     HAS_STATS = False
 
+
 @st.cache_data(ttl=300)
 def monthly_agg_for_forecast(df):
     df2 = df.copy()
-    df2["Date"] = pd.to_datetime(df2["Date"], errors="coerce")
-    df2 = df2.dropna(subset=["Date"])
-    df2["YearMonth"] = df2["Date"].dt.to_period("M").astype(str)
-    monthly = df2.groupby("YearMonth")["PricePaid"].sum().reset_index().sort_values("YearMonth")
+    df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
+    df2 = df2.dropna(subset=[Columns.DATE])
+    df2[Columns.YEAR_MONTH] = df2[Columns.DATE].dt.to_period("M").astype(str)
+    monthly = (
+        df2.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID]
+        .sum().reset_index().sort_values(Columns.YEAR_MONTH)
+    )
     return monthly
+
 
 def monthly_trends(df):
     st.subheader("📈 Expense Trends & Forecasts")
@@ -30,25 +36,20 @@ def monthly_trends(df):
         st.info("No monthly data available.")
         return
 
-    # show last months
-    st.write("Last months:")
-    st.line_chart(monthly.set_index("YearMonth")["PricePaid"])
+    st.write("Monthly spending:")
+    st.line_chart(monthly.set_index(Columns.YEAR_MONTH)[Columns.PRICE_PAID])
 
-    # percent change vs previous month
     if len(monthly) >= 2:
-        last = monthly["PricePaid"].iloc[-1]
-        prev = monthly["PricePaid"].iloc[-2]
+        last = monthly[Columns.PRICE_PAID].iloc[-1]
+        prev = monthly[Columns.PRICE_PAID].iloc[-2]
         pct_change = ((last - prev) / prev * 100) if prev != 0 else 0
-        if pct_change > 0:
-            st.markdown(f"**Change vs previous month:** ⬆️ {pct_change:.1f}%")
-        else:
-            st.markdown(f"**Change vs previous month:** ⬇️ {abs(pct_change):.1f}%")
+        arrow = "⬆️" if pct_change > 0 else "⬇️"
+        st.markdown(f"**Change vs previous month:** {arrow} {abs(pct_change):.1f}%")
     else:
         st.markdown("Not enough months to compute % change.")
 
-    # forecast next month (only if statsmodels available and at least 2 months)
     if not HAS_STATS:
-        st.info("Forecasting library not installed (statsmodels). Install `statsmodels` for forecasting.")
+        st.info("📦 Install `statsmodels` for forecasting: `pip install statsmodels`")
         return
 
     if len(monthly) < 2:
@@ -56,7 +57,7 @@ def monthly_trends(df):
         return
 
     try:
-        model = ExponentialSmoothing(monthly["PricePaid"], trend="add", seasonal=None)
+        model = ExponentialSmoothing(monthly[Columns.PRICE_PAID], trend="add", seasonal=None)
         fit = model.fit()
         forecast = fit.forecast(1)
         next_month_forecast = float(forecast.iloc[0])
@@ -72,38 +73,72 @@ def category_insights(df):
         return
 
     df2 = df.copy()
-    df2["PricePaid"] = pd.to_numeric(df2["PricePaid"], errors="coerce").fillna(0)
-    df2["Date"] = pd.to_datetime(df2["Date"], errors="coerce")
+    df2[Columns.PRICE_PAID] = pd.to_numeric(df2[Columns.PRICE_PAID], errors="coerce").fillna(0)
+    df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
     current_month = pd.Timestamp.now().to_period("M").strftime("%Y-%m")
-    df2["YearMonth"] = df2["Date"].dt.to_period("M").astype(str)
-    this_month = df2[df2["YearMonth"] == current_month]
+    df2[Columns.YEAR_MONTH] = df2[Columns.DATE].dt.to_period("M").astype(str)
+    this_month = df2[df2[Columns.YEAR_MONTH] == current_month]
 
     if this_month.empty:
         st.info("No expenses recorded this month.")
     else:
-        cat_sum = this_month.groupby("Category")["PricePaid"].sum().reset_index().sort_values("PricePaid", ascending=False)
-        top3 = cat_sum.head(3)
-        st.write("**Top 3 Categories (This Month):**")
-        for i, row in top3.iterrows():
-            st.write(f"{i+1}. {row['Category']} — {row['PricePaid']:.0f} SEK")
+        total_this_month = this_month[Columns.PRICE_PAID].sum()
+        cat_sum = (
+            this_month.groupby(Columns.CATEGORY)[Columns.PRICE_PAID]
+            .sum().reset_index().sort_values(Columns.PRICE_PAID, ascending=False)
+        )
+        st.write("**Top Categories (This Month):**")
+        for rank, (_, row) in enumerate(cat_sum.head(5).iterrows(), 1):
+            pct = row[Columns.PRICE_PAID] / total_this_month * 100 if total_this_month else 0
+            st.write(f"{rank}. **{row[Columns.CATEGORY]}** — {row[Columns.PRICE_PAID]:,.0f} SEK ({pct:.1f}%)")
 
-    # Efficiency score (overall dataset)
-    efficiency = df2.groupby("Category").agg(TotalSpend=("PricePaid", "sum"),
-                                            Purchases=("Category", "count")).reset_index()
-    efficiency["EfficiencyScore"] = efficiency.apply(lambda r: (r["TotalSpend"] / r["Purchases"]) if r["Purchases"] else 0, axis=1)
-    st.write("**Category Efficiency Score (SEK per purchase):**")
-    st.dataframe(efficiency[["Category", "EfficiencyScore"]].sort_values("EfficiencyScore", ascending=False))
+    # Avg cost per purchase by category
+    efficiency = df2.groupby(Columns.CATEGORY).agg(
+        TotalSpend=(Columns.PRICE_PAID, "sum"),
+        Purchases=(Columns.CATEGORY, "count")
+    ).reset_index()
+    efficiency["Avg SEK / Purchase"] = (
+        efficiency["TotalSpend"] / efficiency["Purchases"]
+    ).round(0)
+    st.write("**Avg cost per purchase by category:**")
+    st.dataframe(
+        efficiency[[Columns.CATEGORY, "Avg SEK / Purchase"]]
+        .sort_values("Avg SEK / Purchase", ascending=False)
+        .rename(columns={Columns.CATEGORY: "Category"}),
+        width="stretch", hide_index=True
+    )
 
 
 def what_if_simulation(df):
+    """Dynamic what-if simulator — lets user pick any category, not just 'dining'."""
     st.sidebar.markdown("### 💭 What-if Simulation")
     if df.empty:
         st.sidebar.info("No data to simulate.")
         return
-    reduction = st.sidebar.slider("Reduce Dining Expenses by (%)", 0, 100, 10)
-    yearly_spend = df["PricePaid"].sum()
-    dining_spend = df[df["Category"].str.contains("dining", case=False, na=False)]["PricePaid"].sum()
-    savings = dining_spend * (reduction / 100)
-    new_total = yearly_spend - savings
-    st.sidebar.info(f"💡 Potential yearly savings: **{savings:,.0f} SEK**")
-    st.sidebar.caption(f"New estimated yearly total: {new_total:,.0f} SEK")
+
+    df2 = df.copy()
+    df2[Columns.PRICE_PAID] = pd.to_numeric(df2[Columns.PRICE_PAID], errors="coerce").fillna(0)
+    total_spend = df2[Columns.PRICE_PAID].sum()
+
+    # Dynamic category list from actual data
+    categories = sorted(df2[Columns.CATEGORY].dropna().unique().tolist())
+    if not categories:
+        st.sidebar.caption("No categories found.")
+        return
+
+    selected_cat = st.sidebar.selectbox(
+        "Category to cut", categories, key="whatif_cat"
+    )
+    reduction = st.sidebar.slider(
+        f"Reduce {selected_cat} by (%)", 0, 100, 10, key="whatif_pct"
+    )
+
+    cat_spend = df2[df2[Columns.CATEGORY] == selected_cat][Columns.PRICE_PAID].sum()
+    savings   = cat_spend * (reduction / 100)
+    new_total = total_spend - savings
+
+    if savings > 0:
+        st.sidebar.info(f"💡 Potential savings: **{savings:,.0f} SEK**")
+        st.sidebar.caption(f"New estimated total: {new_total:,.0f} SEK")
+    else:
+        st.sidebar.caption(f"No '{selected_cat}' spending in current data.")

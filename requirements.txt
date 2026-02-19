@@ -1,7 +1,33 @@
+# ── Core ──────────────────────────────────────
 streamlit
 plotly
 pandas
 numpy
 openpyxl
+
+# ── Google Sheets integration ─────────────────
 gspread
 oauth2client
+
+# ── Currency conversion ───────────────────────
+requests
+
+# ── Data validation ───────────────────────────
+pydantic>=2.0
+
+# ── Analytics / forecasting ───────────────────
+statsmodels
+
+# ── ML categorization (optional) ─────────────
+scikit-learn
+
+# ── Receipt OCR (optional) ────────────────────
+# Pillow and pytesseract require Tesseract binary:
+# macOS:   brew install tesseract
+# Ubuntu:  sudo apt install tesseract-ocr
+Pillow
+pytesseract
+
+# ── Testing ───────────────────────────────────
+pytest
+pytest-cov
