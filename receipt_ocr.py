@@ -9,6 +9,7 @@ INTEGRATION: Add these functions to your existing receipt_ocr.py file.
 """
 import re
 import requests
+import streamlit as st
 from typing import Optional, Dict
 
 

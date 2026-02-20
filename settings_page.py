@@ -49,7 +49,7 @@ def get_default_settings():
     }
 
 
-def render_settings_page():
+def render_settings_page(df=None):
     """Render the settings page with alert preferences."""
     st.title("⚙️ Settings & Preferences")
     
@@ -172,29 +172,44 @@ def render_settings_page():
                     try:
                         from notification_manager import test_email_configuration
                         with st.spinner("Sending test email..."):
-                            success = test_email_configuration()
+                            success, error = test_email_configuration()
                         if success:
                             st.success("✅ Test email sent! Check your inbox.")
                         else:
-                            st.error("❌ Failed to send. Check your .env file.")
+                            st.error("❌ Failed {error}. Check your .env file.")
                     except ImportError:
                         st.error("❌ notification_manager.py not found")
             
             with col_test2:
                 if st.button("🔴 Test Budget Alert", width="stretch"):
                     try:
-                        from notification_manager import send_test_budget_alert
+                        from notification_manager import send_budget_alert_email
                         with st.spinner("Sending test alert..."):
-                            success = send_test_budget_alert()
+                            success, error = send_budget_alert_email(
+                                df,
+                                alert_title="Test Budget Alert",
+                                alert_message="This is a test budget alert from your Expense Tracker.",
+                                severity="warning"
+                            )
                         if success:
                             st.success("✅ Alert email sent!")
                         else:
-                            st.error("❌ Failed to send")
+                            st.error("❌ Failed: {error}")
                     except ImportError:
                         st.error("❌ notification_manager.py not found")
             
             with col_test3:
-                st.caption("Test your email configuration")
+                if st.button("📊 Test Daily Summary", width="stretch"):
+                    try:
+                        from notification_manager import send_daily_summary_email
+                        with st.spinner("Sending daily summary..."):
+                            success, error = send_daily_summary_email(df)
+                        if success:
+                            st.success("✅ Daily summary sent!")
+                        else:
+                            st.error(f"❌ Failed: {error}")
+                    except ImportError:
+                        st.error("❌ notification_manager.py not found")
         
         st.markdown("---")
         st.markdown("#### 📅 Daily Summary")
@@ -432,4 +447,4 @@ RECEIVER_EMAIL=myexpensetracker@gmail.com
 
 # For testing settings page standalone
 if __name__ == "__main__":
-    render_settings_page()
+    render_settings_page(df=None)

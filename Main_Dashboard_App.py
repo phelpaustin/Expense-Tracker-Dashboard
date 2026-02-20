@@ -42,8 +42,6 @@ def show_alerts_banner(df):
                 st.info(str(alert))
             else:
                 st.success(str(alert))
-
-# Call at top of dashboard:
     
 # New intelligence engine
 try:
@@ -97,7 +95,7 @@ except ImportError:
     HAS_ML = False
 
 try:
-    from receipt_ocr import receipt_upload_ui
+    from receipt_ocr import receipt_upload_ui_with_translation
     HAS_OCR = True
 except ImportError:
     HAS_OCR = False
@@ -654,25 +652,6 @@ def _monthly_bar_chart(df_in):
     st.plotly_chart(style_fig(fig), config={"displayModeBar": False})
 
 
-def _mom_delta_chart(df_in):
-    df2 = df_in.copy()
-    df2["Date"] = pd.to_datetime(df2["Date"], errors="coerce")
-    df2["YM"]   = df2["Date"].dt.to_period("M").astype(str)
-    monthly     = df2.groupby("YM")["PricePaid"].sum().reset_index().sort_values("YM")
-    if len(monthly) < 2:
-        return
-    monthly["delta"] = monthly["PricePaid"].diff()
-    monthly["color"] = monthly["delta"].apply(lambda x: t["danger"] if x > 0 else t["success"])
-    fig = go.Figure(go.Bar(
-        x=monthly["YM"].iloc[1:], y=monthly["delta"].iloc[1:],
-        marker_color=monthly["color"].iloc[1:].tolist(),
-        hovertemplate="<b>%{x}</b><br>%{y:+,.0f} SEK<extra></extra>",
-    ))
-    fig.add_hline(y=0, line_dash="dot", line_color=t["border"])
-    fig.update_layout(title="Month-over-Month Change", showlegend=False)
-    st.plotly_chart(style_fig(fig), config={"displayModeBar": False})
-
-
 # ═══════════════════════════════════════════════════════════════
 #  PAGE: DASHBOARD  ── Modern overview
 # ═══════════════════════════════════════════════════════════════
@@ -1048,7 +1027,7 @@ def page_analytics():
         with st.expander("📈 **TIME ANALYSIS** — Comparisons & Forecasts", expanded=False):
             # Month-over-Month
             st.markdown("#### 📊 Month-over-Month Changes")
-            _mom_delta_chart(df_filtered)
+            mom_comparison_chart(df_filtered)
             
             st.markdown("---")
             
@@ -1226,7 +1205,7 @@ elif page == "budgets" and HAS_BUDGET:
 elif page == "recurring" and HAS_RECURRING:
     recurring_manager_ui(df, save_data, sheet)
 elif page == "receipt" and HAS_OCR:
-    receipt_upload_ui(df, save_data, sheet)
+    receipt_upload_ui_with_translation(df, save_data, sheet)
 elif page == "tax" and HAS_TAX:
     tax_export_ui(df)
 elif page == "ml" and HAS_ML:
@@ -1241,6 +1220,6 @@ elif page == "notifications" and HAS_NOTIFY:
 elif page == "backup" and HAS_BACKUP:
     backup_settings_ui(df, save_data, sheet)
 elif page == "settings":
-    render_settings_page()
+    render_settings_page(df)
 else:
     page_dashboard()

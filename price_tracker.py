@@ -1,0 +1,407 @@
+# price_tracker.py
+"""
+Track price changes of items over time.
+Shows how much prices have increased/decreased for the same items at different shops.
+"""
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+from config import Columns
+
+
+def analyze_price_changes(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Analyze price changes for items over time.
+    
+    Returns DataFrame with price change information.
+    """
+    if df.empty:
+        return pd.DataFrame()
+    
+    df = df.copy()
+    df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
+    df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
+    
+    # Remove null values
+    df = df.dropna(subset=[Columns.DATE, Columns.PRICE_PAID, Columns.ITEM])
+    
+    # Group by item and shop, calculate price statistics
+    price_analysis = []
+    
+    for item in df[Columns.ITEM].unique():
+        item_df = df[df[Columns.ITEM] == item].sort_values(Columns.DATE)
+        
+        if len(item_df) < 2:
+            continue  # Need at least 2 purchases to see change
+        
+        # Overall price change
+        first_price = item_df.iloc[0][Columns.PRICE_PAID]
+        last_price = item_df.iloc[-1][Columns.PRICE_PAID]
+        price_change = last_price - first_price
+        price_change_pct = (price_change / first_price * 100) if first_price > 0 else 0
+        
+        # Calculate trend
+        avg_price = item_df[Columns.PRICE_PAID].mean()
+        min_price = item_df[Columns.PRICE_PAID].min()
+        max_price = item_df[Columns.PRICE_PAID].max()
+        std_price = item_df[Columns.PRICE_PAID].std()
+        
+        # Determine if price is increasing or decreasing
+        recent_avg = item_df.tail(3)[Columns.PRICE_PAID].mean()
+        old_avg = item_df.head(3)[Columns.PRICE_PAID].mean()
+        trend = "Increasing" if recent_avg > old_avg else "Decreasing" if recent_avg < old_avg else "Stable"
+        
+        price_analysis.append({
+            "Item": item,
+            "Category": item_df.iloc[0][Columns.CATEGORY],
+            "First Purchase": item_df.iloc[0][Columns.DATE].date(),
+            "Last Purchase": item_df.iloc[-1][Columns.DATE].date(),
+            "First Price": first_price,
+            "Last Price": last_price,
+            "Price Change": price_change,
+            "Change %": price_change_pct,
+            "Avg Price": avg_price,
+            "Min Price": min_price,
+            "Max Price": max_price,
+            "Volatility": std_price,
+            "Trend": trend,
+            "Purchases": len(item_df)
+        })
+    
+    return pd.DataFrame(price_analysis).sort_values("Change %", ascending=False)
+
+
+def get_shop_price_comparison(df: pd.DataFrame, item: str) -> pd.DataFrame:
+    """Compare prices of same item across different shops."""
+    if df.empty or not item:
+        return pd.DataFrame()
+    
+    df = df.copy()
+    df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
+    
+    item_df = df[df[Columns.ITEM] == item]
+    
+    if item_df.empty:
+        return pd.DataFrame()
+    
+    # Group by shop
+    shop_comparison = item_df.groupby(Columns.SHOP).agg({
+        Columns.PRICE_PAID: ['mean', 'min', 'max', 'count']
+    }).reset_index()
+    
+    shop_comparison.columns = ['Shop', 'Avg Price', 'Min Price', 'Max Price', 'Times Bought']
+    return shop_comparison.sort_values('Avg Price')
+
+
+def plot_price_history(df: pd.DataFrame, item: str):
+    """Plot price history timeline for an item."""
+    df = df.copy()
+    df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
+    df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
+    
+    item_df = df[df[Columns.ITEM] == item].sort_values(Columns.DATE)
+    
+    if item_df.empty:
+        st.warning(f"No price history found for {item}")
+        return
+    
+    # Create line chart with markers
+    fig = go.Figure()
+    
+    # Price line
+    fig.add_trace(go.Scatter(
+        x=item_df[Columns.DATE],
+        y=item_df[Columns.PRICE_PAID],
+        mode='lines+markers',
+        name='Price',
+        line=dict(color='#667eea', width=2),
+        marker=dict(size=8, color=item_df[Columns.SHOP].astype('category').cat.codes, 
+                   colorscale='Viridis', showscale=True,
+                   colorbar=dict(title="Shop"))
+    ))
+    
+    # Add average line
+    avg_price = item_df[Columns.PRICE_PAID].mean()
+    fig.add_hline(y=avg_price, line_dash="dash", line_color="gray",
+                  annotation_text=f"Avg: {avg_price:.0f} SEK")
+    
+    fig.update_layout(
+        title=f"Price History: {item}",
+        xaxis_title="Date",
+        yaxis_title="Price (SEK)",
+        hovermode='x unified',
+        height=400
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Show shop breakdown
+    st.markdown("#### Price by Shop")
+    shop_prices = item_df.groupby(Columns.SHOP)[Columns.PRICE_PAID].agg(['mean', 'min', 'max', 'count'])
+    shop_prices.columns = ['Average', 'Lowest', 'Highest', 'Times Bought']
+    st.dataframe(shop_prices.style.format("{:.0f}"), use_container_width=True)
+
+
+def show_biggest_price_increases(df: pd.DataFrame, n: int = 10):
+    """Show items with biggest price increases."""
+    price_analysis = analyze_price_changes(df)
+    
+    if price_analysis.empty:
+        st.info("Not enough data to analyze price changes. Need at least 2 purchases of same items.")
+        return
+    
+    # Filter for items with actual increases
+    increases = price_analysis[price_analysis["Change %"] > 0].head(n)
+    
+    if increases.empty:
+        st.info("No items with price increases found.")
+        return
+    
+    st.markdown(f"### 📈 Top {n} Items with Biggest Price Increases")
+    
+    # Create bar chart
+    fig = px.bar(
+        increases,
+        x="Item",
+        y="Change %",
+        color="Change %",
+        color_continuous_scale="Reds",
+        hover_data=["First Price", "Last Price", "Purchases"],
+        title="Items with Largest Price Increases"
+    )
+    
+    fig.update_layout(
+        xaxis_title="Item",
+        yaxis_title="Price Increase (%)",
+        height=400
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Show detailed table
+    st.markdown("#### Detailed Price Changes")
+    display_cols = ["Item", "First Price", "Last Price", "Price Change", "Change %", "Trend", "Purchases"]
+    styled_df = increases[display_cols].style.format({
+        "First Price": "{:.0f} SEK",
+        "Last Price": "{:.0f} SEK",
+        "Price Change": "{:+.0f} SEK",
+        "Change %": "{:+.1f}%"
+    })
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+
+def show_best_deals(df: pd.DataFrame, category: str = None):
+    """Find items currently at lowest historical price."""
+    df = df.copy()
+    df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
+    df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
+    
+    if category:
+        df = df[df[Columns.CATEGORY] == category]
+    
+    # Get items bought in last 30 days
+    recent_cutoff = datetime.now() - timedelta(days=30)
+    recent_df = df[df[Columns.DATE] >= recent_cutoff]
+    
+    deals = []
+    for item in recent_df[Columns.ITEM].unique():
+        item_history = df[df[Columns.ITEM] == item]
+        if len(item_history) < 2:
+            continue
+        
+        current_price = recent_df[recent_df[Columns.ITEM] == item][Columns.PRICE_PAID].iloc[-1]
+        historical_min = item_history[Columns.PRICE_PAID].min()
+        historical_avg = item_history[Columns.PRICE_PAID].mean()
+        
+        if current_price <= historical_min:
+            deals.append({
+                "Item": item,
+                "Current Price": current_price,
+                "Historical Avg": historical_avg,
+                "Savings": historical_avg - current_price,
+                "Savings %": (historical_avg - current_price) / historical_avg * 100
+            })
+    
+    if deals:
+        deals_df = pd.DataFrame(deals).sort_values("Savings %", ascending=False)
+        st.markdown("### 💰 Current Best Deals (At or Below Historical Low)")
+        st.dataframe(deals_df.style.format({
+            "Current Price": "{:.0f} SEK",
+            "Historical Avg": "{:.0f} SEK",
+            "Savings": "{:.0f} SEK",
+            "Savings %": "{:.1f}%"
+        }), use_container_width=True, hide_index=True)
+    else:
+        st.info("No items currently at historical low prices.")
+
+
+def price_tracker_ui(df: pd.DataFrame):
+    """Main UI for price tracking feature."""
+    st.title("💰 Price Tracker & Trends")
+    st.markdown("Track how prices of items change over time and find the best deals")
+    
+    if df.empty:
+        st.info("No data available yet. Start tracking expenses to see price trends!")
+        return
+    
+    # Quick stats
+    price_analysis = analyze_price_changes(df)
+    
+    if not price_analysis.empty:
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric(
+            "Items Tracked",
+            len(price_analysis),
+            help="Items purchased multiple times"
+        )
+        
+        avg_increase = price_analysis[price_analysis["Change %"] > 0]["Change %"].mean()
+        col2.metric(
+            "Avg Price Increase",
+            f"{avg_increase:.1f}%" if pd.notna(avg_increase) else "N/A",
+            delta=f"{avg_increase:.1f}%" if pd.notna(avg_increase) else None,
+            delta_color="inverse"
+        )
+        
+        increasing_items = len(price_analysis[price_analysis["Trend"] == "Increasing"])
+        col3.metric(
+            "Items Getting Expensive",
+            increasing_items,
+            delta=f"{increasing_items}/{len(price_analysis)}",
+            delta_color="inverse"
+        )
+        
+        volatile_items = len(price_analysis[price_analysis["Volatility"] > 10])
+        col4.metric(
+            "Volatile Prices",
+            volatile_items,
+            help="Items with high price variation"
+        )
+        
+        st.markdown("---")
+    
+    # Tabs for different views
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 Price Increases",
+        "🔍 Item Lookup",
+        "💰 Best Deals",
+        "📊 Full Analysis"
+    ])
+    
+    with tab1:
+        show_biggest_price_increases(df, n=15)
+    
+    with tab2:
+        st.markdown("### 🔍 Search Item Price History")
+        
+        # Get all items
+        all_items = sorted(df[Columns.ITEM].dropna().unique().tolist())
+        
+        selected_item = st.selectbox(
+            "Select an item to see price history",
+            all_items,
+            help="Choose an item you've purchased multiple times"
+        )
+        
+        if selected_item:
+            plot_price_history(df, selected_item)
+            
+            # Shop comparison
+            st.markdown("#### 🏪 Shop Price Comparison")
+            shop_comp = get_shop_price_comparison(df, selected_item)
+            if not shop_comp.empty:
+                st.dataframe(shop_comp.style.format({
+                    "Avg Price": "{:.0f} SEK",
+                    "Min Price": "{:.0f} SEK",
+                    "Max Price": "{:.0f} SEK"
+                }), use_container_width=True, hide_index=True)
+                
+                # Highlight cheapest shop
+                cheapest = shop_comp.iloc[0]
+                st.success(f"💡 **Best Deal**: {cheapest['Shop']} at avg {cheapest['Avg Price']:.0f} SEK")
+            else:
+                st.info("Only bought from one shop")
+    
+    with tab3:
+        st.markdown("### 💰 Current Best Deals")
+        st.caption("Items currently at or below their historical lowest price")
+        
+        # Category filter
+        categories = ["All"] + sorted(df[Columns.CATEGORY].dropna().unique().tolist())
+        selected_category = st.selectbox("Filter by category", categories)
+        
+        show_best_deals(df, None if selected_category == "All" else selected_category)
+    
+    with tab4:
+        st.markdown("### 📊 Complete Price Analysis")
+        
+        if not price_analysis.empty:
+            # Filters
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                min_purchases = st.slider("Min purchases", 2, 20, 2)
+            with col_f2:
+                trend_filter = st.multiselect(
+                    "Filter by trend",
+                    ["Increasing", "Decreasing", "Stable"],
+                    default=["Increasing", "Decreasing", "Stable"]
+                )
+            
+            # Apply filters
+            filtered = price_analysis[
+                (price_analysis["Purchases"] >= min_purchases) &
+                (price_analysis["Trend"].isin(trend_filter))
+            ]
+            
+            if not filtered.empty:
+                st.dataframe(
+                    filtered.style.format({
+                        "First Price": "{:.0f} SEK",
+                        "Last Price": "{:.0f} SEK",
+                        "Price Change": "{:+.0f} SEK",
+                        "Change %": "{:+.1f}%",
+                        "Avg Price": "{:.0f} SEK",
+                        "Min Price": "{:.0f} SEK",
+                        "Max Price": "{:.0f} SEK",
+                        "Volatility": "{:.1f}"
+                    }).background_gradient(subset=["Change %"], cmap="RdYlGn_r"),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Export
+                csv = filtered.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Download Full Analysis",
+                    csv,
+                    "price_analysis.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("No items match your filters")
+        else:
+            st.info("Not enough data for analysis. Buy the same items multiple times to track price changes!")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Integration helper
+# ═══════════════════════════════════════════════════════════════
+
+def add_to_main_app():
+    """
+    Add this to your Main_Dashboard_App.py:
+    
+    # Import
+    from price_tracker import price_tracker_ui
+    
+    # Add to pages dict
+    pages["💰 Price Tracker"] = "price_tracker"
+    
+    # Add to page router
+    elif page == "price_tracker":
+        price_tracker_ui(df)
+    """
+    pass
