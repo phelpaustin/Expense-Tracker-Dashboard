@@ -185,7 +185,7 @@ def plot_financial_health_score(metrics: dict):
         height=400
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig)
     
     # Overall score
     overall_score = sum(scores) / len(scores)
@@ -321,7 +321,7 @@ def financial_metrics_ui(df: pd.DataFrame):
                 }
             ))
             fig_savings.update_layout(height=300)
-            st.plotly_chart(fig_savings, use_container_width=True)
+            st.plotly_chart(fig_savings)
         
         with col_d2:
             st.markdown("##### Stability")
@@ -347,7 +347,7 @@ def financial_metrics_ui(df: pd.DataFrame):
                 }
             ))
             fig_stability.update_layout(height=300)
-            st.plotly_chart(fig_stability, use_container_width=True)
+            st.plotly_chart(fig_stability)
     
     with tab2:
         st.markdown("### 💵 Cash Flow Analysis")
@@ -390,7 +390,7 @@ def financial_metrics_ui(df: pd.DataFrame):
                     hovermode='x unified'
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
                 
                 # Cumulative cash flow
                 fig_cum = px.line(
@@ -402,7 +402,7 @@ def financial_metrics_ui(df: pd.DataFrame):
                 )
                 fig_cum.add_hline(y=0, line_dash="dash", line_color="gray")
                 fig_cum.update_layout(height=350)
-                st.plotly_chart(fig_cum, use_container_width=True)
+                st.plotly_chart(fig_cum)
                 
                 # Summary table
                 st.dataframe(
@@ -412,7 +412,7 @@ def financial_metrics_ui(df: pd.DataFrame):
                         "Cash Flow": "{:+,.0f} SEK",
                         "Cumulative": "{:+,.0f} SEK"
                     }),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
             else:
@@ -433,7 +433,7 @@ def financial_metrics_ui(df: pd.DataFrame):
                 hole=0.4
             )
             fig_pie.update_layout(height=400)
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie)
             
             # Allocation table
             st.markdown("#### Detailed Allocation")
@@ -442,7 +442,7 @@ def financial_metrics_ui(df: pd.DataFrame):
                     "Amount": "{:,.0f} SEK",
                     "Percentage": "{:.1f}%"
                 }).bar(subset=["Percentage"], color='#667eea'),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
             
@@ -505,7 +505,7 @@ def financial_metrics_ui(df: pd.DataFrame):
             hovermode='x unified'
         )
         
-        st.plotly_chart(fig_trend, use_container_width=True)
+        st.plotly_chart(fig_trend)
         
         # Growth rate
         if len(monthly_trend) >= 2:

@@ -135,13 +135,13 @@ def plot_price_history(df: pd.DataFrame, item: str):
         height=400
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig)
     
     # Show shop breakdown
     st.markdown("#### Price by Shop")
     shop_prices = item_df.groupby(Columns.SHOP)[Columns.PRICE_PAID].agg(['mean', 'min', 'max', 'count'])
     shop_prices.columns = ['Average', 'Lowest', 'Highest', 'Times Bought']
-    st.dataframe(shop_prices.style.format("{:.0f}"), use_container_width=True)
+    st.dataframe(shop_prices.style.format("{:.0f}"), width="stretch")
 
 
 def show_biggest_price_increases(df: pd.DataFrame, n: int = 10):
@@ -178,7 +178,7 @@ def show_biggest_price_increases(df: pd.DataFrame, n: int = 10):
         height=400
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig)
     
     # Show detailed table
     st.markdown("#### Detailed Price Changes")
@@ -189,7 +189,7 @@ def show_biggest_price_increases(df: pd.DataFrame, n: int = 10):
         "Price Change": "{:+.0f} SEK",
         "Change %": "{:+.1f}%"
     })
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    st.dataframe(styled_df, width="stretch", hide_index=True)
 
 
 def show_best_deals(df: pd.DataFrame, category: str = None):
@@ -232,7 +232,7 @@ def show_best_deals(df: pd.DataFrame, category: str = None):
             "Historical Avg": "{:.0f} SEK",
             "Savings": "{:.0f} SEK",
             "Savings %": "{:.1f}%"
-        }), use_container_width=True, hide_index=True)
+        }), width="stretch", hide_index=True)
     else:
         st.info("No items currently at historical low prices.")
 
@@ -317,7 +317,7 @@ def price_tracker_ui(df: pd.DataFrame):
                     "Avg Price": "{:.0f} SEK",
                     "Min Price": "{:.0f} SEK",
                     "Max Price": "{:.0f} SEK"
-                }), use_container_width=True, hide_index=True)
+                }), width="stretch", hide_index=True)
                 
                 # Highlight cheapest shop
                 cheapest = shop_comp.iloc[0]
@@ -368,7 +368,7 @@ def price_tracker_ui(df: pd.DataFrame):
                         "Max Price": "{:.0f} SEK",
                         "Volatility": "{:.1f}"
                     }).background_gradient(subset=["Change %"], cmap="RdYlGn_r"),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
                 
