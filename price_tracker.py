@@ -27,6 +27,13 @@ def analyze_price_changes(df: pd.DataFrame) -> pd.DataFrame:
     # Remove null values
     df = df.dropna(subset=[Columns.DATE, Columns.PRICE_PAID, Columns.ITEM])
     
+    # Compute per-unit price if columns are available
+    if Columns.PRICE_PER_UNIT in df.columns:
+        df[Columns.PRICE_PER_UNIT] = pd.to_numeric(df[Columns.PRICE_PER_UNIT], errors="coerce")
+        price_col = Columns.PRICE_PER_UNIT
+    else:
+        price_col = Columns.PRICE_PAID
+
     # Group by item and shop, calculate price statistics
     price_analysis = []
     
@@ -35,26 +42,34 @@ def analyze_price_changes(df: pd.DataFrame) -> pd.DataFrame:
         
         if len(item_df) < 2:
             continue  # Need at least 2 purchases to see change
+
+        # Determine unit label (e.g. "kg", "L", "Count")
+        unit_label = "unit"
+        if Columns.QUANTITY_UNIT in item_df.columns:
+            unit_vals = item_df[Columns.QUANTITY_UNIT].dropna()
+            if not unit_vals.empty:
+                unit_label = unit_vals.mode().iloc[0]
         
-        # Overall price change
-        first_price = item_df.iloc[0][Columns.PRICE_PAID]
-        last_price = item_df.iloc[-1][Columns.PRICE_PAID]
+        # Overall price change (per unit)
+        first_price = item_df.iloc[0][price_col]
+        last_price = item_df.iloc[-1][price_col]
         price_change = last_price - first_price
         price_change_pct = (price_change / first_price * 100) if first_price > 0 else 0
         
         # Calculate trend
-        avg_price = item_df[Columns.PRICE_PAID].mean()
-        min_price = item_df[Columns.PRICE_PAID].min()
-        max_price = item_df[Columns.PRICE_PAID].max()
-        std_price = item_df[Columns.PRICE_PAID].std()
+        avg_price = item_df[price_col].mean()
+        min_price = item_df[price_col].min()
+        max_price = item_df[price_col].max()
+        std_price = item_df[price_col].std()
         
         # Determine if price is increasing or decreasing
-        recent_avg = item_df.tail(3)[Columns.PRICE_PAID].mean()
-        old_avg = item_df.head(3)[Columns.PRICE_PAID].mean()
+        recent_avg = item_df.tail(3)[price_col].mean()
+        old_avg = item_df.head(3)[price_col].mean()
         trend = "Increasing" if recent_avg > old_avg else "Decreasing" if recent_avg < old_avg else "Stable"
         
         price_analysis.append({
             "Item": item,
+            "Unit": unit_label,
             "Category": item_df.iloc[0][Columns.CATEGORY],
             "First Purchase": item_df.iloc[0][Columns.DATE].date(),
             "Last Purchase": item_df.iloc[-1][Columns.DATE].date(),
@@ -74,74 +89,110 @@ def analyze_price_changes(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_shop_price_comparison(df: pd.DataFrame, item: str) -> pd.DataFrame:
-    """Compare prices of same item across different shops."""
+    """Compare per-unit prices of same item across different shops."""
     if df.empty or not item:
         return pd.DataFrame()
     
     df = df.copy()
     df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
+
+    # Use per-unit price when available
+    if Columns.PRICE_PER_UNIT in df.columns:
+        df[Columns.PRICE_PER_UNIT] = pd.to_numeric(df[Columns.PRICE_PER_UNIT], errors="coerce")
+        price_col = Columns.PRICE_PER_UNIT
+    else:
+        price_col = Columns.PRICE_PAID
     
     item_df = df[df[Columns.ITEM] == item]
     
     if item_df.empty:
         return pd.DataFrame()
+
+    # Determine unit label
+    unit_label = "unit"
+    if Columns.QUANTITY_UNIT in item_df.columns:
+        unit_vals = item_df[Columns.QUANTITY_UNIT].dropna()
+        if not unit_vals.empty:
+            unit_label = unit_vals.mode().iloc[0]
     
-    # Group by shop
+    # Group by shop using per-unit price
     shop_comparison = item_df.groupby(Columns.SHOP).agg({
-        Columns.PRICE_PAID: ['mean', 'min', 'max', 'count']
+        price_col: ['mean', 'min', 'max', 'count']
     }).reset_index()
     
-    shop_comparison.columns = ['Shop', 'Avg Price', 'Min Price', 'Max Price', 'Times Bought']
-    return shop_comparison.sort_values('Avg Price')
+    shop_comparison.columns = ['Shop', f'Avg Price/{unit_label}', f'Min Price/{unit_label}', f'Max Price/{unit_label}', 'Times Bought']
+    return shop_comparison.sort_values(f'Avg Price/{unit_label}')
 
 
 def plot_price_history(df: pd.DataFrame, item: str):
-    """Plot price history timeline for an item."""
+    """Plot per-unit price history timeline for an item."""
     df = df.copy()
     df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
     df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
+
+    # Use per-unit price when available
+    if Columns.PRICE_PER_UNIT in df.columns:
+        df[Columns.PRICE_PER_UNIT] = pd.to_numeric(df[Columns.PRICE_PER_UNIT], errors="coerce")
+        price_col = Columns.PRICE_PER_UNIT
+    else:
+        price_col = Columns.PRICE_PAID
     
     item_df = df[df[Columns.ITEM] == item].sort_values(Columns.DATE)
     
     if item_df.empty:
         st.warning(f"No price history found for {item}")
         return
+
+    # Determine unit label
+    unit_label = "unit"
+    if Columns.QUANTITY_UNIT in item_df.columns:
+        unit_vals = item_df[Columns.QUANTITY_UNIT].dropna()
+        if not unit_vals.empty:
+            unit_label = unit_vals.mode().iloc[0]
+
+    y_axis_title = f"Price per {unit_label} (SEK)"
+    chart_title = f"Price History: {item}  (per {unit_label})"
     
     # Create line chart with markers
     fig = go.Figure()
     
-    # Price line
+    # Per-unit price line
     fig.add_trace(go.Scatter(
         x=item_df[Columns.DATE],
-        y=item_df[Columns.PRICE_PAID],
+        y=item_df[price_col],
         mode='lines+markers',
-        name='Price',
+        name=f'Price / {unit_label}',
         line=dict(color='#667eea', width=2),
         marker=dict(size=8, color=item_df[Columns.SHOP].astype('category').cat.codes, 
                    colorscale='Viridis', showscale=True,
-                   colorbar=dict(title="Shop"))
+                   colorbar=dict(title="Shop")),
+        hovertemplate=f"%{{x|%Y-%m-%d}}<br>%{{y:.2f}} SEK/{unit_label}<extra></extra>"
     ))
     
     # Add average line
-    avg_price = item_df[Columns.PRICE_PAID].mean()
+    avg_price = item_df[price_col].mean()
     fig.add_hline(y=avg_price, line_dash="dash", line_color="gray",
-                  annotation_text=f"Avg: {avg_price:.0f} SEK")
+                  annotation_text=f"Avg: {avg_price:.2f} SEK/{unit_label}")
     
     fig.update_layout(
-        title=f"Price History: {item}",
+        title=chart_title,
         xaxis_title="Date",
-        yaxis_title="Price (SEK)",
+        yaxis_title=y_axis_title,
         hovermode='x unified',
         height=400
     )
     
     st.plotly_chart(fig)
     
-    # Show shop breakdown
-    st.markdown("#### Price by Shop")
-    shop_prices = item_df.groupby(Columns.SHOP)[Columns.PRICE_PAID].agg(['mean', 'min', 'max', 'count'])
-    shop_prices.columns = ['Average', 'Lowest', 'Highest', 'Times Bought']
-    st.dataframe(shop_prices.style.format("{:.0f}"), width="stretch")
+    # Show shop breakdown (per-unit)
+    st.markdown(f"#### Price per {unit_label} by Shop")
+    shop_prices = item_df.groupby(Columns.SHOP)[price_col].agg(['mean', 'min', 'max', 'count'])
+    shop_prices.columns = [f'Average/{unit_label}', f'Lowest/{unit_label}', f'Highest/{unit_label}', 'Times Bought']
+    st.dataframe(shop_prices.style.format({
+        f'Average/{unit_label}': "{:.2f}",
+        f'Lowest/{unit_label}': "{:.2f}",
+        f'Highest/{unit_label}': "{:.2f}",
+    }), width="stretch")
 
 
 def show_biggest_price_increases(df: pd.DataFrame, n: int = 10):
@@ -168,8 +219,8 @@ def show_biggest_price_increases(df: pd.DataFrame, n: int = 10):
         y="Change %",
         color="Change %",
         color_continuous_scale="Reds",
-        hover_data=["First Price", "Last Price", "Purchases"],
-        title="Items with Largest Price Increases"
+        hover_data=["Unit", "First Price", "Last Price", "Purchases"],
+        title="Items with Largest Per-Unit Price Increases"
     )
     
     fig.update_layout(
@@ -181,22 +232,29 @@ def show_biggest_price_increases(df: pd.DataFrame, n: int = 10):
     st.plotly_chart(fig)
     
     # Show detailed table
-    st.markdown("#### Detailed Price Changes")
-    display_cols = ["Item", "First Price", "Last Price", "Price Change", "Change %", "Trend", "Purchases"]
+    st.markdown("#### Detailed Price Changes (Per Unit)")
+    display_cols = ["Item", "Unit", "First Price", "Last Price", "Price Change", "Change %", "Trend", "Purchases"]
     styled_df = increases[display_cols].style.format({
-        "First Price": "{:.0f} SEK",
-        "Last Price": "{:.0f} SEK",
-        "Price Change": "{:+.0f} SEK",
+        "First Price": "{:.2f} SEK",
+        "Last Price": "{:.2f} SEK",
+        "Price Change": "{:+.2f} SEK",
         "Change %": "{:+.1f}%"
     })
     st.dataframe(styled_df, width="stretch", hide_index=True)
 
 
 def show_best_deals(df: pd.DataFrame, category: str = None):
-    """Find items currently at lowest historical price."""
+    """Find items currently at lowest historical per-unit price."""
     df = df.copy()
     df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
     df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
+
+    # Use per-unit price when available
+    if Columns.PRICE_PER_UNIT in df.columns:
+        df[Columns.PRICE_PER_UNIT] = pd.to_numeric(df[Columns.PRICE_PER_UNIT], errors="coerce")
+        price_col = Columns.PRICE_PER_UNIT
+    else:
+        price_col = Columns.PRICE_PAID
     
     if category:
         df = df[df[Columns.CATEGORY] == category]
@@ -210,27 +268,35 @@ def show_best_deals(df: pd.DataFrame, category: str = None):
         item_history = df[df[Columns.ITEM] == item]
         if len(item_history) < 2:
             continue
+
+        # Unit label
+        unit_label = "unit"
+        if Columns.QUANTITY_UNIT in item_history.columns:
+            unit_vals = item_history[Columns.QUANTITY_UNIT].dropna()
+            if not unit_vals.empty:
+                unit_label = unit_vals.mode().iloc[0]
         
-        current_price = recent_df[recent_df[Columns.ITEM] == item][Columns.PRICE_PAID].iloc[-1]
-        historical_min = item_history[Columns.PRICE_PAID].min()
-        historical_avg = item_history[Columns.PRICE_PAID].mean()
+        current_price = recent_df[recent_df[Columns.ITEM] == item][price_col].iloc[-1]
+        historical_min = item_history[price_col].min()
+        historical_avg = item_history[price_col].mean()
         
         if current_price <= historical_min:
             deals.append({
                 "Item": item,
-                "Current Price": current_price,
-                "Historical Avg": historical_avg,
-                "Savings": historical_avg - current_price,
+                "Unit": unit_label,
+                f"Current Price/Unit": current_price,
+                f"Historical Avg/Unit": historical_avg,
+                "Savings/Unit": historical_avg - current_price,
                 "Savings %": (historical_avg - current_price) / historical_avg * 100
             })
     
     if deals:
         deals_df = pd.DataFrame(deals).sort_values("Savings %", ascending=False)
-        st.markdown("### 💰 Current Best Deals (At or Below Historical Low)")
+        st.markdown("### 💰 Current Best Deals (At or Below Historical Low Per Unit)")
         st.dataframe(deals_df.style.format({
-            "Current Price": "{:.0f} SEK",
-            "Historical Avg": "{:.0f} SEK",
-            "Savings": "{:.0f} SEK",
+            "Current Price/Unit": "{:.2f} SEK",
+            "Historical Avg/Unit": "{:.2f} SEK",
+            "Savings/Unit": "{:.2f} SEK",
             "Savings %": "{:.1f}%"
         }), width="stretch", hide_index=True)
     else:
@@ -310,18 +376,18 @@ def price_tracker_ui(df: pd.DataFrame):
             plot_price_history(df, selected_item)
             
             # Shop comparison
-            st.markdown("#### 🏪 Shop Price Comparison")
+            st.markdown("#### 🏪 Shop Price Comparison (Per Unit)")
             shop_comp = get_shop_price_comparison(df, selected_item)
             if not shop_comp.empty:
-                st.dataframe(shop_comp.style.format({
-                    "Avg Price": "{:.0f} SEK",
-                    "Min Price": "{:.0f} SEK",
-                    "Max Price": "{:.0f} SEK"
-                }), width="stretch", hide_index=True)
+                # Format all numeric columns to 2 decimal places
+                numeric_cols = shop_comp.select_dtypes(include='number').columns
+                fmt = {col: "{:.2f} SEK" for col in numeric_cols}
+                st.dataframe(shop_comp.style.format(fmt), width="stretch", hide_index=True)
                 
-                # Highlight cheapest shop
+                # Highlight cheapest shop (first column after 'Shop' is the avg price)
+                avg_col = shop_comp.columns[1]
                 cheapest = shop_comp.iloc[0]
-                st.success(f"💡 **Best Deal**: {cheapest['Shop']} at avg {cheapest['Avg Price']:.0f} SEK")
+                st.success(f"💡 **Best Deal**: {cheapest['Shop']} at avg {cheapest[avg_col]:.2f} SEK/{avg_col.split('/')[-1]}")
             else:
                 st.info("Only bought from one shop")
     
@@ -337,6 +403,7 @@ def price_tracker_ui(df: pd.DataFrame):
     
     with tab4:
         st.markdown("### 📊 Complete Price Analysis")
+        st.caption("All prices shown are per unit (e.g. per kg, per L, per item) for accurate comparison.")
         
         if not price_analysis.empty:
             # Filters
@@ -359,14 +426,14 @@ def price_tracker_ui(df: pd.DataFrame):
             if not filtered.empty:
                 st.dataframe(
                     filtered.style.format({
-                        "First Price": "{:.0f} SEK",
-                        "Last Price": "{:.0f} SEK",
-                        "Price Change": "{:+.0f} SEK",
+                        "First Price": "{:.2f} SEK",
+                        "Last Price": "{:.2f} SEK",
+                        "Price Change": "{:+.2f} SEK",
                         "Change %": "{:+.1f}%",
-                        "Avg Price": "{:.0f} SEK",
-                        "Min Price": "{:.0f} SEK",
-                        "Max Price": "{:.0f} SEK",
-                        "Volatility": "{:.1f}"
+                        "Avg Price": "{:.2f} SEK",
+                        "Min Price": "{:.2f} SEK",
+                        "Max Price": "{:.2f} SEK",
+                        "Volatility": "{:.2f}"
                     }).background_gradient(subset=["Change %"], cmap="RdYlGn_r"),
                     width="stretch",
                     hide_index=True
