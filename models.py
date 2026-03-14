@@ -3,8 +3,8 @@
 Pydantic models for type-safe data structures.
 Provides validation, serialization, and type hints.
 """
-from pydantic import BaseModel, Field, validator, root_validator
-from typing import Optional, List
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from typing import Optional, List, Any
 from datetime import date, datetime
 from enum import Enum
 
@@ -50,28 +50,24 @@ class ExpenseItem(BaseModel):
     currency: CurrencyEnum = Field(CurrencyEnum.SEK)
     quantity_unit: str = Field("Count", max_length=50)
     
-    class Config:
-        use_enum_values = True
-        validate_assignment = True
-    
-    @validator('item', 'brand', 'shop')
-    def strip_whitespace(cls, v):
+    model_config = ConfigDict(use_enum_values=True, validate_assignment=True)
+
+    @field_validator('item', 'brand', 'shop', mode='before')
+    @classmethod
+    def strip_whitespace(cls, v: Any) -> Any:
         """Strip whitespace from string fields."""
-        return v.strip() if v else v
-    
-    @validator('date')
-    def date_not_future(cls, v):
-        """Ensure date is not in the future."""
-        if v > datetime.now().date():
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator('date', mode='after')
+    @classmethod
+    def validate_date(cls, v: date) -> date:
+        """Ensure date is not in the future and not unreasonably old."""
+        today = datetime.now().date()
+        if v > today:
             raise ValueError("Date cannot be in the future")
-        return v
-    
-    @validator('date')
-    def date_not_too_old(cls, v):
-        """Warn if date is very old."""
-        years_ago = (datetime.now().date() - v).days / 365.25
+        years_ago = (today - v).days / 365.25
         if years_ago > 10:
-            raise ValueError(f"Date is {years_ago:.0f} years old - possibly incorrect?")
+            raise ValueError(f"Date is {years_ago:.0f} years old — possibly incorrect?")
         return v
     
     @property
@@ -125,10 +121,9 @@ class ExpenseBatch(BaseModel):
     expense_type: ExpenseTypeEnum
     shop: str
     currency: CurrencyEnum = CurrencyEnum.SEK
-    items: List[ExpenseItem] = Field(..., min_items=1)
-    
-    class Config:
-        use_enum_values = True
+    items: List[ExpenseItem] = Field(..., min_length=1)
+
+    model_config = ConfigDict(use_enum_values=True)
     
     @property
     def total_amount(self) -> float:
@@ -158,32 +153,18 @@ class ExpenseFilter(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     
-    class Config:
-        use_enum_values = True
-    
-    @root_validator
-    def validate_price_range(cls, values):
-        """Ensure min_price <= max_price."""
-        min_p = values.get('min_price')
-        max_p = values.get('max_price')
-        
-        if min_p is not None and max_p is not None:
-            if min_p > max_p:
+    model_config = ConfigDict(use_enum_values=True)
+
+    @model_validator(mode='after')
+    def validate_ranges(self) -> 'ExpenseFilter':
+        """Ensure price range and date range are logically ordered."""
+        if self.min_price is not None and self.max_price is not None:
+            if self.min_price > self.max_price:
                 raise ValueError("min_price cannot be greater than max_price")
-        
-        return values
-    
-    @root_validator
-    def validate_date_range(cls, values):
-        """Ensure start_date <= end_date."""
-        start = values.get('start_date')
-        end = values.get('end_date')
-        
-        if start is not None and end is not None:
-            if start > end:
+        if self.start_date is not None and self.end_date is not None:
+            if self.start_date > self.end_date:
                 raise ValueError("start_date cannot be after end_date")
-        
-        return values
+        return self
 
 
 # ============================================================
@@ -263,8 +244,7 @@ class UserPreferences(BaseModel):
     auto_save: bool = True
     date_format: str = "%Y-%m-%d"
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # ============================================================
@@ -303,13 +283,15 @@ class ExportConfig(BaseModel):
     date_format: str = "%Y-%m-%d"
     encoding: str = "utf-8"
     
-    @validator('file_format')
-    def validate_format(cls, v):
-        """Validate file format."""
+    @field_validator('file_format', mode='after')
+    @classmethod
+    def validate_format(cls, v: str) -> str:
+        """Validate and normalise file format."""
         valid_formats = ["csv", "xlsx", "json"]
-        if v.lower() not in valid_formats:
+        normalised = v.lower()
+        if normalised not in valid_formats:
             raise ValueError(f"Format must be one of: {', '.join(valid_formats)}")
-        return v.lower()
+        return normalised
 
 
 # ============================================================
@@ -317,30 +299,41 @@ class ExportConfig(BaseModel):
 # ============================================================
 def validate_expense_dict(data: dict) -> ValidationResult:
     """
-    Validate expense dictionary using Pydantic model.
-    
+    Validate an expense dictionary.
+
+    Delegates entirely to ``ExpenseValidator.validate_expense_item`` in
+    ``validators.py``, which is the single source of truth for field rules
+    (limits, allowed values, date constraints).  The Pydantic ``ExpenseItem``
+    model's field constraints (``gt=``, ``le=``, ``min_length=``) act as a
+    last-line-of-defence at persistence time; this function is the UI-facing
+    validation path used before an item is ever constructed.
+
     Args:
-        data: Dictionary to validate
-    
+        data: Raw expense dict with DataFrame-style keys
+              (``"Item"``, ``"PricePaid"``, ``"Quantity"``, ``"Date"``, …).
+
     Returns:
-        ValidationResult with errors/warnings
+        ``ValidationResult`` — ``is_valid=True`` on success, otherwise
+        populated with human-readable error strings.
     """
+    # Local import avoids a circular dependency at module level
+    # (validators.py does not import from models.py).
+    from validators import ExpenseValidator
+
     result = ValidationResult(is_valid=True)
-    
-    try:
-        # Try to create model
-        ExpenseItem(**data)
-    except Exception as e:
+    is_valid, errors = ExpenseValidator.validate_expense_item(
+        item=data.get("Item", ""),
+        price=data.get("PricePaid", 0),
+        quantity=data.get("Quantity", 0),
+        date_value=data.get("Date"),
+        expense_type=data.get("ExpenseType"),
+        currency=data.get("Currency"),
+        category=data.get("Category"),
+    )
+    if not is_valid:
         result.is_valid = False
-        # Parse pydantic errors
-        if hasattr(e, 'errors'):
-            for error in e.errors():
-                field = error.get('loc', ['unknown'])[0]
-                msg = error.get('msg', 'validation error')
-                result.add_error(f"{field}: {msg}")
-        else:
-            result.add_error(str(e))
-    
+        for error in errors:
+            result.add_error(error)
     return result
 
 

@@ -2,6 +2,7 @@
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from uuid import uuid4
 from config import (
     Columns, 
     ChartConfig, 
@@ -76,7 +77,7 @@ def category_pie(df):
         showlegend=True,
         margin=ChartConfig.CHART_MARGIN
     )
-    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG)
+    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG, key=f"chart_category_pie_{uuid4().hex}")
 
 
 def monthly_spending(df):
@@ -94,7 +95,7 @@ def monthly_spending(df):
         labels={Columns.PRICE_PAID: "SEK"},
     )
     fig.update_layout(margin=ChartConfig.CHART_MARGIN)
-    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG)
+    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG, key=f"chart_monthly_spending_{uuid4().hex}")
 
 
 def calendar_heatmap(df):
@@ -124,7 +125,7 @@ def calendar_heatmap(df):
         color_continuous_scale=ChartConfig.COLOR_SCALE_HEATMAP,  # Use constant
     )
     fig.update_layout(margin=ChartConfig.CHART_MARGIN)
-    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG)
+    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG, key=f"chart_calendar_heatmap_{uuid4().hex}")
 
 
 def stacked_area_chart(df):
@@ -152,7 +153,7 @@ def stacked_area_chart(df):
         title=ChartConfig.TITLE_STACKED_AREA,  # Use constant
     )
     fig.update_layout(margin=ChartConfig.CHART_MARGIN)
-    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG)
+    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG, key=f"chart_stacked_area_{uuid4().hex}")
 
 
 def multi_year_comparison(df):
@@ -176,4 +177,4 @@ def multi_year_comparison(df):
         title=ChartConfig.TITLE_YEARLY_COMPARISON,  # Use constant
     )
     fig.update_layout(margin=ChartConfig.CHART_MARGIN)
-    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG)
+    st.plotly_chart(fig, config=ChartConfig.PLOTLY_CONFIG, key=f"chart_multi_year_{uuid4().hex}")

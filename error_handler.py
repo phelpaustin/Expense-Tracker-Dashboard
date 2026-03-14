@@ -533,23 +533,6 @@ class ErrorRecovery:
         return pd.DataFrame()
     
     @staticmethod
-    def prompt_manual_input(field_name: str, error: Exception, default_value: Any = None):
-        """Prompt user for manual input when automatic method fails."""
-        st.warning(f"⚠️ Could not automatically get {field_name}: {str(error)}")
-        
-        if isinstance(default_value, float):
-            return st.number_input(
-                f"Please enter {field_name} manually:",
-                value=default_value or 0.0,
-                min_value=0.0
-            )
-        else:
-            return st.text_input(
-                f"Please enter {field_name} manually:",
-                value=default_value or ""
-            )
-    
-    @staticmethod
     def save_to_backup(data, backup_path: str = "data/backup.csv"):
         """Save data to backup location on save failure."""
         try:

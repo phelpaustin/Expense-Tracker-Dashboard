@@ -529,18 +529,3 @@ def financial_metrics_ui(df: pd.DataFrame):
                     f"{yoy_growth:+.1f}%",
                     delta_color="inverse"
                 )
-
-
-# Integration helper
-def add_to_main_app():
-    """
-    Add to Main_Dashboard_App.py:
-    
-    from financial_metrics import financial_metrics_ui
-    
-    pages["📊 Financial Metrics"] = "financial_metrics"
-    
-    elif page == "financial_metrics":
-        financial_metrics_ui(df)
-    """
-    pass

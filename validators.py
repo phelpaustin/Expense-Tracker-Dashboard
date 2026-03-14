@@ -96,7 +96,7 @@ class ExpenseValidator:
             if isinstance(date_value, str):
                 try:
                     date_value = pd.to_datetime(date_value).date()
-                except:
+                except (ValueError, TypeError):
                     errors.append("❌ Invalid date format")
                     date_value = None
             
@@ -187,7 +187,7 @@ class ExpenseValidator:
                         row_errors.append("Invalid date format")
                     elif date_val.date() > datetime.now().date():
                         row_errors.append("Date in future")
-                except:
+                except (ValueError, TypeError):
                     row_errors.append("Cannot parse date")
             
             if row_errors:
@@ -242,7 +242,7 @@ class ExpenseValidator:
                 dates = pd.to_datetime(df["Date"], errors="coerce")
                 today = pd.Timestamp.now().normalize()
                 stats["future_dates"] = (dates > today).sum()
-            except:
+            except Exception:
                 pass
         
         if "Item" in df.columns:
@@ -252,14 +252,14 @@ class ExpenseValidator:
             try:
                 prices = pd.to_numeric(df["PricePaid"], errors="coerce")
                 stats["invalid_prices"] = (prices <= 0).sum() + prices.isna().sum()
-            except:
+            except Exception:
                 pass
         
         if "Quantity" in df.columns:
             try:
                 quantities = pd.to_numeric(df["Quantity"], errors="coerce")
                 stats["invalid_quantities"] = (quantities <= 0).sum() + quantities.isna().sum()
-            except:
+            except Exception:
                 pass
         
         # Add validation errors to errors list

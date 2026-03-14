@@ -4,12 +4,14 @@ Notification system for budget alerts and spending summaries.
 Sends emails via Gmail SMTP.
 """
 import os
+import json
 import smtplib
 import streamlit as st
 import pandas as pd
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Tuple
 
 try:
@@ -18,6 +20,60 @@ try:
     HAS_DOTENV = True
 except ImportError:
     HAS_DOTENV = False
+
+
+# ═══════════════════════════════════════════════════════════════
+# SETTINGS PERSISTENCE
+# ═══════════════════════════════════════════════════════════════
+
+SETTINGS_FILE = "data/notification_settings.json"
+
+_DEFAULT_SETTINGS: dict = {
+    "enable_alerts": True,
+    "alert_at_80": True,
+    "alert_at_90": True,
+    "alert_at_100": True,
+    "enable_daily_summary": False,
+    "summary_time": "18:00",
+}
+
+
+def load_notification_settings() -> dict:
+    """
+    Load notification settings from disk.
+
+    Returns the persisted settings dict, or the defaults if the file does
+    not exist or cannot be parsed.
+    """
+    path = Path(SETTINGS_FILE)
+    if path.exists():
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            # Merge with defaults so new keys added in future releases are
+            # present even for users with an older settings file on disk.
+            return {**_DEFAULT_SETTINGS, **stored}
+        except Exception:
+            pass
+    return dict(_DEFAULT_SETTINGS)
+
+
+def save_notification_settings(settings: dict) -> bool:
+    """
+    Persist notification settings to disk.
+
+    Args:
+        settings: Settings dict to save.
+
+    Returns:
+        True on success, False on failure.
+    """
+    try:
+        path = Path(SETTINGS_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -256,26 +312,29 @@ Expense Tracker Notification System
 def notification_settings_ui(df: pd.DataFrame):
     """Notification settings page UI."""
     st.title("🔔 Notification Settings")
-    
+
+    # ── Load persisted settings ──────────────────────────────────
+    settings = load_notification_settings()
+
     # Check email configuration
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
     email_configured = bool(sender_email and sender_password)
-    
+
     if email_configured:
         st.success(f"✅ Email configured: {sender_email}")
     else:
         st.warning("⚠️ Email not configured. Add credentials to .env file.")
-        
+
         with st.expander("📖 Setup Instructions"):
             st.markdown("""
             ### How to Configure Gmail:
-            
+
             1. **Get App Password**:
                - Visit: https://myaccount.google.com/security
                - Enable 2-Step Verification
                - Generate App Password for "Mail"
-            
+
             2. **Create .env file** in project root:
             ```
             SMTP_SERVER=smtp.gmail.com
@@ -284,17 +343,17 @@ def notification_settings_ui(df: pd.DataFrame):
             SENDER_PASSWORD=your-16-char-app-password
             RECEIVER_EMAIL=your.email@gmail.com
             ```
-            
+
             3. **Restart the app**
             """)
         return
-    
-    # Test Notifications
+
+    # ── Test Notifications ───────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📧 Test Notifications")
-    
+
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         if st.button("🧪 Test Email", use_container_width=True):
             with st.spinner("Sending test email..."):
@@ -303,7 +362,7 @@ def notification_settings_ui(df: pd.DataFrame):
                 st.success("✅ Test email sent! Check your inbox.")
             else:
                 st.error(f"❌ Failed: {error}")
-    
+
     with col2:
         if st.button("📧 Test Budget Alert", use_container_width=True):
             with st.spinner("Sending budget alert..."):
@@ -312,7 +371,7 @@ def notification_settings_ui(df: pd.DataFrame):
                 st.success("✅ Budget alert sent!")
             else:
                 st.error(f"❌ Failed: {error}")
-    
+
     with col3:
         if st.button("📊 Test Daily Summary", use_container_width=True):
             with st.spinner("Sending daily summary..."):
@@ -321,48 +380,61 @@ def notification_settings_ui(df: pd.DataFrame):
                 st.success("✅ Daily summary sent!")
             else:
                 st.error(f"❌ Failed: {error}")
-    
-    # Alert Settings
+
+    # ── Alert Settings ───────────────────────────────────────────
     st.markdown("---")
     st.markdown("### ⚙️ Alert Settings")
-    
+
     enable_alerts = st.checkbox(
         "Enable budget alerts",
-        value=True,
-        help="Get notified when approaching budget limits"
+        value=settings["enable_alerts"],
+        help="Get notified when approaching budget limits",
     )
-    
+
+    alert_80 = alert_90 = alert_100 = False
     if enable_alerts:
         col1, col2, col3 = st.columns(3)
-        
         with col1:
-            alert_80 = st.checkbox("🟡 Alert at 80%", value=True)
+            alert_80 = st.checkbox("🟡 Alert at 80%", value=settings["alert_at_80"])
         with col2:
-            alert_90 = st.checkbox("🟠 Alert at 90%", value=True)
+            alert_90 = st.checkbox("🟠 Alert at 90%", value=settings["alert_at_90"])
         with col3:
-            alert_100 = st.checkbox("🔴 Alert when exceeded", value=True)
-        
-        st.info("💡 Settings will be saved when you click the Save button")
-    
-    # Daily Summary
+            alert_100 = st.checkbox("🔴 Alert when exceeded", value=settings["alert_at_100"])
+
+    # ── Daily Summary ────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📅 Daily Summary")
-    
+
     enable_daily = st.checkbox(
         "Send daily summary email",
-        value=False,
-        help="Receive spending summary every day"
+        value=settings["enable_daily_summary"],
+        help="Receive spending summary every day",
     )
-    
+
+    summary_time_str = settings["summary_time"]
     if enable_daily:
-        summary_time = st.time_input(
-            "Delivery time",
-            value=datetime.strptime("18:00", "%H:%M").time()
-        )
+        default_time = datetime.strptime(summary_time_str, "%H:%M").time()
+        summary_time = st.time_input("Delivery time", value=default_time)
+        summary_time_str = summary_time.strftime("%H:%M")
         st.info(f"📬 You'll receive daily summaries at {summary_time.strftime('%I:%M %p')}")
-    
-    # Save Settings
+
+    # ── Save Settings ────────────────────────────────────────────
     st.markdown("---")
     if st.button("💾 Save Settings", type="primary", use_container_width=True):
-        st.success("✅ Settings saved!")
-        st.info("⚠️ Note: Daily summaries require a background scheduler to be set up separately.")
+        new_settings = {
+            "enable_alerts": enable_alerts,
+            "alert_at_80": alert_80,
+            "alert_at_90": alert_90,
+            "alert_at_100": alert_100,
+            "enable_daily_summary": enable_daily,
+            "summary_time": summary_time_str,
+        }
+        if save_notification_settings(new_settings):
+            st.success("✅ Settings saved!")
+            if enable_daily:
+                st.info(
+                    "⚠️ Note: Daily summaries require a background scheduler "
+                    "to be set up separately."
+                )
+        else:
+            st.error("❌ Could not save settings. Check write permissions on the data/ folder.")

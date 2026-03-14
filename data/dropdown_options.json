@@ -1,7 +1,9 @@
 {
     "categories": [
         "Alcohol",
+        "Baby Shopping",
         "Bags",
+        "Bakery",
         "Cutlery",
         "Dairy",
         "Dine-Out",
@@ -14,6 +16,7 @@
         "Masala",
         "Meat",
         "Oil",
+        "Personal Care and Hygiene",
         "Photos",
         "Picnic Things",
         "Seafood",
@@ -28,9 +31,17 @@
         "Alcohol": [
             "Whiskey"
         ],
+        "Bakery": [
+            "Bread",
+            "Cake"
+        ],
         "Bags": [],
         "Cutlery": [],
-        "Dairy": [],
+        "Dairy": [
+            "Cheese",
+            "Milk",
+            "Cream"
+        ],
         "Dine-Out": [
             "Dinner",
             "Lunch"
@@ -38,6 +49,7 @@
         "Fruits": [],
         "Furnishing & Decor": [],
         "Groceries": [
+            "Noodles",
             "Rice"
         ],
         "Household": [],
@@ -46,6 +58,7 @@
         "Masala": [],
         "Meat": [
             "Chicken",
+            "Egg",
             "Pork"
         ],
         "Oil": [],
@@ -66,7 +79,19 @@
         ],
         "Vegetable": [
             "Indian Vegetable",
-            "Indian Vegetables"
+            "Indian Vegetables",
+            "Salad"
+        ],
+        "Personal Care and Hygiene": [
+            "Fragrances",
+            "Grooming",
+            "Hair Care",
+            "Makeup/Casmetics",
+            "Oral Hygiene",
+            "Skin Care"
+        ],
+        "Baby Shopping": [
+            "Baby Gear and Equipments"
         ]
     },
     "shops": [
@@ -77,8 +102,10 @@
         "Coop - Stadion",
         "Coop Jägersro",
         "ICA MAXI Supermarket Västra Hamnen",
+        "ICA Malmborgs Lund",
         "ICA Mobilia",
         "ICA Värnhem",
+        "IKEA",
         "Indo-Pak",
         "Kalra Foods AB",
         "Lera",

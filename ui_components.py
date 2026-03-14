@@ -2,10 +2,32 @@
 import streamlit as st
 import pandas as pd
 from currency_manager import get_exchange_rate
-from utils import calculate_price_per_unit, load_dropdown_options
+from utils import calculate_price_per_unit, load_dropdown_options, save_dropdown_options
 from config import SUPPORTED_CURRENCIES, DEFAULT_CURRENCY, Columns
 from data_manager import bump_data_version
 from validators import ExpenseValidator, ValidationError
+
+
+# ── Helper: inline "Add new option" widget ───────────────────────────────────
+def _add_new_widget(label: str, session_key: str) -> "str | None":
+    """
+    Compact text-input + ➕ button rendered side-by-side.
+    Returns the new value (stripped) if the user clicked ➕ with non-empty text,
+    otherwise returns None.  Must be called OUTSIDE any st.form block.
+    """
+    col_in, col_btn = st.columns([5, 1])
+    with col_in:
+        new_val = st.text_input(
+            f"New {label}",
+            key=f"_new_{session_key}",
+            placeholder=f"✏️  Add new {label}…",
+            label_visibility="collapsed",
+        )
+    with col_btn:
+        add_clicked = st.button("➕", key=f"_add_{session_key}", help=f"Save new {label}")
+    if add_clicked and new_val.strip():
+        return new_val.strip()
+    return None
 
 
 # ====================================================
@@ -41,19 +63,58 @@ def sidebar_add_expense(df, save_fn):
     """Sidebar for adding multiple expense items under same expense context."""
     st.sidebar.markdown("### ➕ Add Expense (Multi-Item Mode)")
 
-    # ---------------- LOAD DROPDOWN DATA ----------------
-    dropdowns = load_dropdown_options()
-    categories = dropdowns.get("categories", [])
-    subcategories_map = dropdowns.get("subcategories", {})
-    shops = dropdowns.get("shops", [])
-    units = dropdowns.get("units", ["Count"])
+    # ── Seed session-state dropdowns once (survives reruns; avoids full reload) ──
+    if "dropdowns" not in st.session_state:
+        st.session_state["dropdowns"] = load_dropdown_options()
+
+    dropdowns: dict = st.session_state["dropdowns"]
+    categories: list       = dropdowns.get("categories", [])
+    subcategories_map: dict = dropdowns.get("subcategories", {})
+    shops: list            = dropdowns.get("shops", [])
+    units: list            = dropdowns.get("units", ["Count"])
+    expense_types: list    = dropdowns.get("expense_types", ["Goods", "Service"])
+
+    # ── Initialise persistent session state ──────────────────────────────────
+    if "multi_items" not in st.session_state:
+        st.session_state["multi_items"] = []
+    if "selected_category" not in st.session_state:
+        st.session_state["selected_category"] = categories[0] if categories else ""
+    if "selected_subcategory" not in st.session_state:
+        st.session_state["selected_subcategory"] = ""
+    if "temp_inputs" not in st.session_state:
+        st.session_state["temp_inputs"] = {
+            "item": "", "brand": "", "quantity": "", "unit": "Count", "amount": ""
+        }
 
     with st.sidebar.expander("Add New Expense Batch", expanded=True):
         date = st.date_input("Date")
-        expense_type = st.selectbox("Expense Type", ["Goods", "Service"])
 
-        shop = st.selectbox("Shop", options=shops)
+        # ── Expense Type with inline "add new" ───────────────────────────────
+        st.caption("Expense Type")
+        expense_type = st.selectbox(
+            "Expense Type", options=expense_types,
+            key="selected_expense_type", label_visibility="collapsed",
+        )
+        new_etype = _add_new_widget("Expense Type", "expense_type")
+        if new_etype and new_etype not in expense_types:
+            dropdowns["expense_types"] = sorted(expense_types + [new_etype])
+            save_dropdown_options(dropdowns)
+            st.success(f"✅ Added expense type: {new_etype}")
+            st.rerun()
 
+        # ── Shop with inline "add new" ────────────────────────────────────────
+        st.caption("Shop")
+        shop = st.selectbox(
+            "Shop", options=shops, key="selected_shop", label_visibility="collapsed",
+        )
+        new_shop = _add_new_widget("Shop", "shop")
+        if new_shop and new_shop not in shops:
+            dropdowns["shops"] = sorted(shops + [new_shop])
+            save_dropdown_options(dropdowns)
+            st.success(f"✅ Added shop: {new_shop}")
+            st.rerun()
+
+        # ── Currency ─────────────────────────────────────────────────────────
         currency = st.selectbox("Currency", ["SEK", "INR"])
         if currency == "INR":
             rate = get_exchange_rate("INR", "SEK")
@@ -64,40 +125,40 @@ def sidebar_add_expense(df, save_fn):
         st.divider()
         st.markdown("#### 🧾 Add Items for this Expense")
 
-        # ---------------- SESSION STATE ----------------
-        if "multi_items" not in st.session_state:
-            st.session_state["multi_items"] = []
-
-        if "selected_category" not in st.session_state:
-            st.session_state["selected_category"] = categories[0] if categories else ""
-
-        if "selected_subcategory" not in st.session_state:
-            st.session_state["selected_subcategory"] = ""
-
-        if "temp_inputs" not in st.session_state:
-            st.session_state["temp_inputs"] = {
-                "item": "",
-                "brand": "",
-                "quantity": "",
-                "unit": "Count",
-                "amount": ""
-            }
-
-        # ---------------- CATEGORY & SUBCATEGORY (OUTSIDE FORM) ----------------
+        # ── Category with inline "add new" ────────────────────────────────────
+        st.caption("Category")
         category = st.selectbox(
-            "Category",
-            options=categories,
-            key="selected_category"
+            "Category", options=categories,
+            key="selected_category", label_visibility="collapsed",
         )
+        new_cat = _add_new_widget("Category", "category")
+        if new_cat and new_cat not in categories:
+            dropdowns["categories"] = sorted(categories + [new_cat])
+            if new_cat not in dropdowns.get("subcategories", {}):
+                dropdowns.setdefault("subcategories", {})[new_cat] = []
+            save_dropdown_options(dropdowns)
+            st.success(f"✅ Added category: {new_cat}")
+            st.rerun()
 
-        subcategory_options = subcategories_map.get(category, [])
-
+        # ── Subcategory with inline "add new" ─────────────────────────────────
+        subcategory_options: list = subcategories_map.get(category, [])
+        st.caption("Subcategory")
         subcategory = st.selectbox(
             "Subcategory",
             options=[""] + subcategory_options,
             key="selected_subcategory",
-            disabled=len(subcategory_options) == 0
+            label_visibility="collapsed",
+            disabled=False,                          # always enabled so user can add new
         )
+        new_sub = _add_new_widget("Subcategory", "subcategory")
+        if new_sub and new_sub not in subcategory_options:
+            dropdowns.setdefault("subcategories", {}).setdefault(category, [])
+            dropdowns["subcategories"][category] = sorted(
+                dropdowns["subcategories"][category] + [new_sub]
+            )
+            save_dropdown_options(dropdowns)
+            st.success(f"✅ Added subcategory: {new_sub} → {category}")
+            st.rerun()
 
     # ---------------- ADD ITEM FORM (WITH VALIDATION) ----------------
         with st.form("add_item_form", clear_on_submit=True):

@@ -451,24 +451,3 @@ def price_tracker_ui(df: pd.DataFrame):
                 st.info("No items match your filters")
         else:
             st.info("Not enough data for analysis. Buy the same items multiple times to track price changes!")
-
-
-# ═══════════════════════════════════════════════════════════════
-# Integration helper
-# ═══════════════════════════════════════════════════════════════
-
-def add_to_main_app():
-    """
-    Add this to your Main_Dashboard_App.py:
-    
-    # Import
-    from price_tracker import price_tracker_ui
-    
-    # Add to pages dict
-    pages["💰 Price Tracker"] = "price_tracker"
-    
-    # Add to page router
-    elif page == "price_tracker":
-        price_tracker_ui(df)
-    """
-    pass

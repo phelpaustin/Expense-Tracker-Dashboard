@@ -5,7 +5,7 @@
   "threshold_100": true,
   "predictive_alerts": true,
   "velocity_alerts": true,
-  "daily_summary_enabled": false,
+  "daily_summary_enabled": true,
   "daily_summary_time": "18:00",
   "weekly_summary_enabled": true,
   "desktop_notifications": false

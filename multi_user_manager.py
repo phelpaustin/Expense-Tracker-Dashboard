@@ -3,7 +3,9 @@
 Multi-user support — user profiles, shared expenses, split tracking.
 """
 import json
+import hmac
 import hashlib
+import secrets
 import pandas as pd
 import streamlit as st
 from datetime import datetime
@@ -37,7 +39,55 @@ def save_users(users: list):
 
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    """
+    Hash a password with a random per-user salt using PBKDF2-HMAC-SHA256.
+
+    The returned string has the format ``{salt_hex}:{derived_key_hex}`` so
+    both pieces are stored together in a single ``password_hash`` field.
+    260 000 iterations matches NIST SP 800-132 (2023) guidance.
+    """
+    salt = secrets.token_hex(32)          # 32 bytes → 64 hex chars
+    key = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations=260_000,
+    )
+    return f"{salt}:{key.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """
+    Verify *password* against *stored_hash*.
+
+    Supports two formats:
+    - **New** (PBKDF2 + salt): ``"{salt_hex}:{key_hex}"`` — produced by
+      :func:`hash_password` above.
+    - **Legacy** (plain SHA-256, no colon): kept for backward-compatibility
+      so existing users are not locked out.  Any legacy hash is accepted but
+      the account should be re-hashed on next successful login if desired.
+    """
+    if not stored_hash:
+        return False
+
+    if ":" in stored_hash:
+        # New PBKDF2 format
+        try:
+            salt, key_hex = stored_hash.split(":", 1)
+            expected = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                salt.encode("utf-8"),
+                iterations=260_000,
+            )
+            # Use hmac.compare_digest to prevent timing attacks
+            return hmac.compare_digest(expected.hex(), key_hex)
+        except Exception:
+            return False
+    else:
+        # Legacy plain SHA-256 format (no salt)
+        legacy_hash = hashlib.sha256(password.encode()).hexdigest()
+        return hmac.compare_digest(legacy_hash, stored_hash)
 
 
 def get_user_by_id(user_id: str) -> Optional[dict]:
@@ -70,7 +120,7 @@ def authenticate_user(name: str, password: str) -> Optional[dict]:
         if user["name"] == name:
             if user.get("password_hash") is None:
                 return user
-            if user["password_hash"] == hash_password(password):
+            if verify_password(password, user["password_hash"]):
                 return user
     return None
 
