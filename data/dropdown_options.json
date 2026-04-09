@@ -4,11 +4,13 @@
         "Baby Shopping",
         "Bags",
         "Bakery",
+        "Baking",
         "Cutlery",
         "Dairy",
         "Dine-Out",
         "Fruits",
         "Furnishing & Decor",
+        "Gardening",
         "Groceries",
         "Household",
         "Juices",
@@ -59,6 +61,8 @@
         "Meat": [
             "Chicken",
             "Egg",
+            "Frozen",
+            "Mutton",
             "Pork"
         ],
         "Oil": [],
@@ -86,13 +90,18 @@
             "Fragrances",
             "Grooming",
             "Hair Care",
+            "Laundry",
             "Makeup/Casmetics",
             "Oral Hygiene",
             "Skin Care"
         ],
         "Baby Shopping": [
-            "Baby Gear and Equipments"
-        ]
+            "Baby Gear and Equipments",
+            "Creams",
+            "Food"
+        ],
+        "Gardening": [],
+        "Baking": []
     },
     "shops": [
         "Aiko Sushi",
@@ -101,6 +110,7 @@
         "Burger King",
         "Coop - Stadion",
         "Coop Jägersro",
+        "Grillspecialisten",
         "ICA MAXI Supermarket Västra Hamnen",
         "ICA Malmborgs Lund",
         "ICA Mobilia",

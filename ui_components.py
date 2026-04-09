@@ -30,6 +30,52 @@ def _add_new_widget(label: str, session_key: str) -> "str | None":
     return None
 
 
+# ── Duplicate detection ───────────────────────────────────────────────────────
+def _check_duplicates(new_rows: list, df: pd.DataFrame) -> list:
+    """
+    Return human-readable descriptions of any new_rows that are exact
+    duplicates of rows already in df.
+    Matches on: Date, Shop, Item, PricePaid, and Quantity.
+    """
+    if df.empty or not new_rows:
+        return []
+    key_cols = [Columns.DATE, Columns.SHOP, Columns.ITEM, Columns.PRICE_PAID, Columns.QUANTITY]
+    descs = []
+    for row in new_rows:
+        mask = pd.Series([True] * len(df), index=df.index)
+        all_present = True
+        for col in key_cols:
+            if col not in df.columns or col not in row:
+                all_present = False
+                break
+            mask &= df[col].astype(str) == str(row[col])
+        if all_present and mask.any():
+            descs.append(
+                f"**{row.get(Columns.ITEM, '?')}** — "
+                f"{float(row.get(Columns.PRICE_PAID, 0)):,.2f} SEK "
+                f"(×{row.get(Columns.QUANTITY, '?')}) "
+                f"on {row.get(Columns.DATE, '?')} @ {row.get(Columns.SHOP, '?')}"
+            )
+    return descs
+
+
+# ── Persist + record last batch ───────────────────────────────────────────────
+def _do_save(new_rows: list, df: pd.DataFrame, save_fn) -> None:
+    """
+    Concatenate new_rows onto df, call save_fn, clear the item list,
+    and store metadata so the 'Edit Last Saved' panel can offer corrections.
+    """
+    n = len(new_rows)
+    updated = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+    save_fn(updated)
+    st.success(f"✅ Added {n} expense entr{'y' if n == 1 else 'ies'} successfully!")
+    # Store for quick-edit panel
+    st.session_state["_last_saved_batch"] = new_rows
+    st.session_state["_last_saved_count"] = n
+    st.session_state["multi_items"].clear()
+    bump_data_version()
+
+
 # ====================================================
 # 🌗 THEME CSS
 # ====================================================
@@ -68,11 +114,11 @@ def sidebar_add_expense(df, save_fn):
         st.session_state["dropdowns"] = load_dropdown_options()
 
     dropdowns: dict = st.session_state["dropdowns"]
-    categories: list       = dropdowns.get("categories", [])
+    categories: list        = dropdowns.get("categories", [])
     subcategories_map: dict = dropdowns.get("subcategories", {})
-    shops: list            = dropdowns.get("shops", [])
-    units: list            = dropdowns.get("units", ["Count"])
-    expense_types: list    = dropdowns.get("expense_types", ["Goods", "Service"])
+    shops: list             = dropdowns.get("shops", [])
+    units: list             = dropdowns.get("units", ["Count"])
+    expense_types: list     = dropdowns.get("expense_types", ["Goods", "Service"])
 
     # ── Initialise persistent session state ──────────────────────────────────
     if "multi_items" not in st.session_state:
@@ -148,7 +194,7 @@ def sidebar_add_expense(df, save_fn):
             options=[""] + subcategory_options,
             key="selected_subcategory",
             label_visibility="collapsed",
-            disabled=False,                          # always enabled so user can add new
+            disabled=False,
         )
         new_sub = _add_new_widget("Subcategory", "subcategory")
         if new_sub and new_sub not in subcategory_options:
@@ -166,19 +212,19 @@ def sidebar_add_expense(df, save_fn):
 
             with col1:
                 item = st.text_input(
-                    "Item *", 
+                    "Item *",
                     st.session_state["temp_inputs"]["item"],
                     placeholder="e.g., Milk, Bread, Coffee"
                 )
                 brand = st.text_input(
-                    "Brand", 
+                    "Brand",
                     st.session_state["temp_inputs"]["brand"],
                     placeholder="Optional"
                 )
 
             with col2:
                 quantity_str = st.text_input(
-                    "Quantity *", 
+                    "Quantity *",
                     st.session_state["temp_inputs"]["quantity"],
                     placeholder="e.g., 1, 2.5, 0.5"
                 )
@@ -191,7 +237,7 @@ def sidebar_add_expense(df, save_fn):
 
                 amount_label = f"Amount ({currency}) *"
                 amount_str = st.text_input(
-                    amount_label, 
+                    amount_label,
                     st.session_state["temp_inputs"]["amount"],
                     placeholder="e.g., 25.50"
                 )
@@ -202,11 +248,11 @@ def sidebar_add_expense(df, save_fn):
             if submitted_item:
                 # ============ VALIDATION STARTS HERE ============
                 validation_errors = []
-                
+
                 # Sanitize text inputs
                 item_clean = ExpenseValidator.sanitize_text(item)
                 brand_clean = ExpenseValidator.sanitize_text(brand)
-                
+
                 # Validate and parse quantity
                 try:
                     quantity = ExpenseValidator.validate_numeric_input(
@@ -218,7 +264,7 @@ def sidebar_add_expense(df, save_fn):
                 except ValidationError as e:
                     validation_errors.append(str(e))
                     quantity = 0.0
-                
+
                 # Validate and parse amount
                 try:
                     amount = ExpenseValidator.validate_numeric_input(
@@ -230,11 +276,11 @@ def sidebar_add_expense(df, save_fn):
                 except ValidationError as e:
                     validation_errors.append(str(e))
                     amount = 0.0
-                
+
                 # Calculate price in SEK
                 price = round(amount * rate, 2) if amount and rate else 0.0
                 price_per_unit = round(price / quantity, 2) if quantity and quantity > 0 else 0.0
-                
+
                 # Perform comprehensive validation
                 is_valid, item_errors = ExpenseValidator.validate_expense_item(
                     item=item_clean,
@@ -245,27 +291,27 @@ def sidebar_add_expense(df, save_fn):
                     currency=currency,
                     category=category
                 )
-                
+
                 # Combine all errors
                 all_errors = validation_errors + item_errors
-                
+
                 # Display errors or add item
                 if all_errors:
                     st.error("**Validation Failed:**")
                     for error in all_errors:
                         st.error(error)
                     st.stop()
-                
+
                 # All validations passed - add item
                 new_item = {
-                    Columns.CATEGORY: category or "Uncategorized",
-                    Columns.SUBCATEGORY: subcategory,
-                    Columns.ITEM: item_clean,
-                    Columns.BRAND: brand_clean,
-                    Columns.QUANTITY: quantity,
+                    Columns.CATEGORY:      category or "Uncategorized",
+                    Columns.SUBCATEGORY:   subcategory,
+                    Columns.ITEM:          item_clean,
+                    Columns.BRAND:         brand_clean,
+                    Columns.QUANTITY:      quantity,
                     Columns.QUANTITY_UNIT: unit,
-                    Columns.PRICE_PAID: price,
-                    Columns.CURRENCY: currency,
+                    Columns.PRICE_PAID:    price,
+                    Columns.CURRENCY:      currency,
                     Columns.PRICE_PER_UNIT: price_per_unit,
                 }
 
@@ -273,65 +319,180 @@ def sidebar_add_expense(df, save_fn):
 
                 # Reset inputs
                 st.session_state["temp_inputs"] = {
-                    "item": "",
-                    "brand": "",
-                    "quantity": "",
-                    "unit": "Count",
-                    "amount": ""
+                    "item": "", "brand": "", "quantity": "", "unit": "Count", "amount": ""
                 }
 
                 st.success(f"✅ Added: {item_clean} ({price:.2f} SEK)")
                 st.rerun()
 
-    # ---------------- SHOW ITEMS + SAVE ----------------
+        # ---------------- SHOW ITEMS + SAVE ----------------
         if st.session_state["multi_items"]:
             st.markdown("#### 🧮 Items Added So Far")
-            st.dataframe(pd.DataFrame(st.session_state["multi_items"]), hide_index=True)
 
-            total_price = sum(i.get(Columns.PRICE_PAID, 0) for i in st.session_state["multi_items"])
+            # ── Edit last item ────────────────────────────────────────────────
+            last_idx = len(st.session_state["multi_items"]) - 1
+            with st.expander("✏️ Edit Last Item", expanded=False):
+                last = st.session_state["multi_items"][last_idx]
+                st.caption(f"Editing: **{last.get(Columns.ITEM, '?')}** — "
+                           f"{float(last.get(Columns.PRICE_PAID, 0)):,.2f} SEK")
+                with st.form("edit_last_item_form"):
+                    ec1, ec2 = st.columns(2)
+                    ei_name  = ec1.text_input(
+                        "Item *", value=str(last.get(Columns.ITEM, "")))
+                    ei_brand = ec1.text_input(
+                        "Brand",  value=str(last.get(Columns.BRAND, "")))
+                    ei_qty   = ec2.number_input(
+                        "Quantity *",
+                        value=float(last.get(Columns.QUANTITY, 1.0)),
+                        min_value=0.001, step=0.1, format="%.3f",
+                    )
+                    ei_price = ec2.number_input(
+                        "Price (SEK) *",
+                        value=float(last.get(Columns.PRICE_PAID, 0.01)),
+                        min_value=0.01, step=1.0,
+                    )
+                    _u_opts = units if units else ["Count"]
+                    _u_curr = last.get(Columns.QUANTITY_UNIT, "Count")
+                    ei_unit = st.selectbox(
+                        "Unit", _u_opts,
+                        index=_u_opts.index(_u_curr) if _u_curr in _u_opts else 0,
+                    )
+                    if st.form_submit_button("💾 Update Last Item", type="primary"):
+                        ppu = round(ei_price / ei_qty, 2) if ei_qty > 0 else 0
+                        st.session_state["multi_items"][last_idx].update({
+                            Columns.ITEM:           ei_name.strip(),
+                            Columns.BRAND:          ei_brand.strip(),
+                            Columns.QUANTITY:       ei_qty,
+                            Columns.PRICE_PAID:     ei_price,
+                            Columns.PRICE_PER_UNIT: ppu,
+                            Columns.QUANTITY_UNIT:  ei_unit,
+                        })
+                        st.success("✅ Item updated!")
+                        st.rerun()
+
+            # Items table
+            st.dataframe(
+                pd.DataFrame(st.session_state["multi_items"]), hide_index=True
+            )
+
+            total_price = sum(
+                i.get(Columns.PRICE_PAID, 0) for i in st.session_state["multi_items"]
+            )
             st.markdown(f"### 💰 Total: **{total_price:.2f} SEK**")
 
-            col_a, col_b = st.sidebar.columns(2)
+            # ── Duplicate confirmation UI (shown on rerun after check) ────────
+            if st.session_state.get("_dup_warning_active"):
+                st.warning("⚠️ **Possible Duplicate Entries Detected**")
+                st.markdown(
+                    "The following items look identical to existing records "
+                    "for the same date and shop:"
+                )
+                for desc in st.session_state.get("_dup_descs", []):
+                    st.markdown(f"- {desc}")
+                st.markdown("Do you want to add them anyway?")
+                cy, cn = st.columns(2)
+                with cy:
+                    if st.button(
+                        "✅ Yes, add anyway", key="dup_yes", use_container_width=True
+                    ):
+                        _do_save(
+                            st.session_state["_pending_new_rows"], df, save_fn
+                        )
+                        for k in ("_dup_warning_active", "_dup_descs", "_pending_new_rows"):
+                            st.session_state.pop(k, None)
+                        st.rerun()
+                with cn:
+                    if st.button(
+                        "❌ Cancel", key="dup_no", use_container_width=True
+                    ):
+                        for k in ("_dup_warning_active", "_dup_descs", "_pending_new_rows"):
+                            st.session_state.pop(k, None)
+                        st.rerun()
 
-            with col_a:
-                if st.button("🗑️ Clear Items", width="stretch"):
-                    st.session_state["multi_items"].clear()
-                    st.rerun()
+            else:
+                # ── Normal save / clear buttons ───────────────────────────────
+                col_a, col_b = st.sidebar.columns(2)
 
-            with col_b:
-                if st.button("💾 Add All Expenses", width="stretch"):
-                    # Validate all items before saving
-                    all_items_df = pd.DataFrame(st.session_state["multi_items"])
-                    all_items_df[Columns.DATE] = date
-                    all_items_df[Columns.EXPENSE_TYPE] = expense_type
-                    all_items_df[Columns.SHOP] = shop
-                    
-                    # Final validation before save
-                    is_valid, errors, _ = ExpenseValidator.validate_dataframe(all_items_df)
-                    
-                    if not is_valid:
-                        st.error("**Cannot save - validation errors found:**")
-                        for error in errors[:5]:
-                            st.error(error)
-                        st.stop()
-                    
-                    # All valid - save
-                    new_rows = []
-                    for entry in st.session_state["multi_items"]:
-                        row = {
-                            Columns.DATE: pd.to_datetime(date).date(),
-                            Columns.EXPENSE_TYPE: expense_type,
-                            Columns.SHOP: shop,
-                            **entry,
-                        }
-                        new_rows.append(row)
+                with col_a:
+                    if st.button("🗑️ Clear Items", width="stretch"):
+                        st.session_state["multi_items"].clear()
+                        for k in ("_dup_warning_active", "_dup_descs", "_pending_new_rows"):
+                            st.session_state.pop(k, None)
+                        st.rerun()
 
-                    df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
-                    save_fn(df)
+                with col_b:
+                    if st.button("💾 Add All Expenses", width="stretch"):
+                        # Build candidate rows for validation + duplicate check
+                        all_items_df = pd.DataFrame(st.session_state["multi_items"])
+                        all_items_df[Columns.DATE]         = date
+                        all_items_df[Columns.EXPENSE_TYPE] = expense_type
+                        all_items_df[Columns.SHOP]         = shop
 
-                    st.success(f"✅ Added {len(new_rows)} expense entries successfully!")
-                    st.session_state["multi_items"].clear()
+                        is_valid, v_errors, _ = ExpenseValidator.validate_dataframe(
+                            all_items_df
+                        )
+                        if not is_valid:
+                            st.error("**Cannot save — validation errors found:**")
+                            for err in v_errors[:5]:
+                                st.error(err)
+                        else:
+                            new_rows = [
+                                {
+                                    Columns.DATE:         pd.to_datetime(date).date(),
+                                    Columns.EXPENSE_TYPE: expense_type,
+                                    Columns.SHOP:         shop,
+                                    **entry,
+                                }
+                                for entry in st.session_state["multi_items"]
+                            ]
+                            # ── Duplicate check ───────────────────────────────
+                            dups = _check_duplicates(new_rows, df)
+                            if dups:
+                                st.session_state["_dup_warning_active"] = True
+                                st.session_state["_dup_descs"]          = dups
+                                st.session_state["_pending_new_rows"]   = new_rows
+                                st.rerun()
+                            else:
+                                _do_save(new_rows, df, save_fn)
+                                st.rerun()
+
+    # ── Quick-edit last saved expense ─────────────────────────────────────────
+    last_batch = st.session_state.get("_last_saved_batch")
+    if last_batch:
+        _shop = last_batch[0].get(Columns.SHOP, "") if last_batch else ""
+        _date = str(last_batch[0].get(Columns.DATE, "")) if last_batch else ""
+        with st.sidebar.expander(
+            f"✏️ Quick-Edit Last Save  ({_shop} · {_date})",
+            expanded=True,
+        ):
+            st.caption(
+                "Spot a mistake? Edit the rows below and re-save. "
+                "This replaces only the entries you just added."
+            )
+            batch_df    = pd.DataFrame(last_batch)
+            edited_batch = st.data_editor(
+                batch_df, num_rows="fixed", hide_index=True, key="quick_edit_last",
+            )
+            qc1, qc2 = st.columns(2)
+            with qc1:
+                if st.button(
+                    "💾 Re-save", key="resave_last",
+                    type="primary", use_container_width=True
+                ):
+                    n = st.session_state.get("_last_saved_count", len(last_batch))
+                    # Strip the last n rows from current df, append edited rows
+                    trimmed = df.iloc[:-n].copy() if n <= len(df) else df.iloc[0:0].copy()
+                    merged  = pd.concat([trimmed, edited_batch], ignore_index=True)
+                    save_fn(merged)
+                    st.success("✅ Changes re-saved!")
+                    for k in ("_last_saved_batch", "_last_saved_count"):
+                        st.session_state.pop(k, None)
                     bump_data_version()
+                    st.rerun()
+            with qc2:
+                if st.button("✖ Dismiss", key="dismiss_last", use_container_width=True):
+                    for k in ("_last_saved_batch", "_last_saved_count"):
+                        st.session_state.pop(k, None)
                     st.rerun()
 
 
@@ -370,7 +531,6 @@ def filter_section(df):
         min_date = df[Columns.DATE].min().date()
         max_date = df[Columns.DATE].max().date()
         start_date, end_date = st.sidebar.date_input("📅 Date Range", [min_date, max_date])
-    # If no valid dates, start_date/end_date remain None
 
     # --- Apply filters ---
     df_filtered = df.copy()
@@ -409,10 +569,9 @@ def inline_edit_table(df, save_fn, sheet=None):
     # Ensure Date is datetime
     df[Columns.DATE] = pd.to_datetime(df[Columns.DATE], errors="coerce")
 
-
     # Extract year/month
-    df["Year"] = df[Columns.DATE].dt.year
-    df["Month"] = df[Columns.DATE].dt.month
+    df["Year"]      = df[Columns.DATE].dt.year
+    df["Month"]     = df[Columns.DATE].dt.month
     df["MonthName"] = df[Columns.DATE].dt.strftime("%B")
 
     df[Columns.DATE] = df[Columns.DATE].dt.date
@@ -509,7 +668,7 @@ def inline_edit_table(df, save_fn, sheet=None):
 
     if selected_month_name != "All":
         filtered_df = filtered_df[filtered_df["Month"] == month_map[selected_month_name]]
-    
+
     filtered_df["Date"] = filtered_df["Date"]
 
     st.markdown("### 🧾 Filtered Entries")
@@ -534,17 +693,17 @@ def inline_edit_table(df, save_fn, sheet=None):
         if st.button("💾 Save Changes", key="save_filtered_btn"):
             # Validate edited data before saving
             is_valid, errors, invalid_rows = ExpenseValidator.validate_dataframe(edited_df)
-            
+
             if not is_valid:
                 st.error("**Cannot save - validation errors found:**")
                 for error in errors[:10]:
                     st.error(error)
-                
+
                 if not invalid_rows.empty:
                     st.markdown("**Invalid rows:**")
                     st.dataframe(invalid_rows, hide_index=True)
                 st.stop()
-            
+
             # Auto-recompute PricePerUnit
             if "PricePaid" in edited_df.columns and "Quantity" in edited_df.columns:
                 edited_df["PricePerUnit"] = edited_df.apply(
