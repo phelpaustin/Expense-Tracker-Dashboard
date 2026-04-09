@@ -138,3 +138,10 @@ try:
 except ImportError:
     HAS_FINANCIAL_METRICS = False
     financial_metrics_ui = None
+
+# ── Trip Expense Tracker ───────────────────────────────────────
+try:
+    from trips_manager import all_trips_summary  # noqa: F401 – confirms module present
+    HAS_TRIPS = True
+except ImportError:
+    HAS_TRIPS = False

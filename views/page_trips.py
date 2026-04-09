@@ -68,8 +68,8 @@ def _currency_symbol(c: str) -> str:
 def _fmt(amount: float, currency: str) -> str:
     sym = _currency_symbol(currency)
     if currency in ("USD", "INR"):
-        return f"{sym}{amount:,.0f}"
-    return f"{amount:,.0f} {sym}"
+        return f"{sym}{amount:,.2f}"
+    return f"{amount:,.2f} {sym}"
 
 
 def _badge(label: str, color: str) -> str:
@@ -335,6 +335,18 @@ def _render_trip_detail(trip_id: str, t: dict) -> None:
     if start and end:
         date_range = f"{start.strftime('%d %b %Y')}  →  {end.strftime('%d %b %Y')}"
 
+    _desc_html = (
+        f'<div style="margin-top:6px;font-size:0.8rem;color:rgba(255,255,255,0.7);">'
+        f'{trip.get("description","")}</div>'
+        if trip.get("description") else ""
+    )
+    _budget_html = (
+        f'<div style="font-size:0.8rem;color:rgba(255,255,255,0.7);">of {_fmt(budget, cur)} budget</div>'
+        if budget else
+        '<div style="font-size:0.8rem;color:rgba(255,255,255,0.7);">total spent</div>'
+    )
+    _days_s = "s" if dur != 1 else ""
+
     st.markdown(
         f"""<div style='{_card_style(t)}background:{t["gradient"]};border:none;'>
             <div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;'>
@@ -344,18 +356,15 @@ def _render_trip_detail(trip_id: str, t: dict) -> None:
                     </div>
                     <div style='font-size:0.85rem;color:rgba(255,255,255,0.8);margin-top:4px;'>
                         📍 {trip.get('destination','—')} &nbsp;·&nbsp; {date_range}
-                        &nbsp;·&nbsp; {dur} day{'s' if dur != 1 else ''}
+                        &nbsp;·&nbsp; {dur} day{_days_s}
                     </div>
-                    {('<div style="margin-top:6px;font-size:0.8rem;color:rgba(255,255,255,0.7);">' +
-                      trip.get("description","") + '</div>') if trip.get("description") else ""}
+                    {_desc_html}
                 </div>
                 <div style='text-align:right;'>
                     <div style='font-size:2rem;font-weight:800;color:white;letter-spacing:-0.03em;'>
                         {_fmt(spent, cur)}
                     </div>
-                    {'<div style="font-size:0.8rem;color:rgba(255,255,255,0.7);">of ' +
-                     _fmt(budget, cur) + ' budget</div>' if budget else
-                     '<div style="font-size:0.8rem;color:rgba(255,255,255,0.7);">total spent</div>'}
+                    {_budget_html}
                     <div style='margin-top:4px;'>
                         <span style='background:rgba(255,255,255,0.2);color:white;border-radius:6px;
                                      padding:2px 10px;font-size:0.72rem;font-weight:700;'>
