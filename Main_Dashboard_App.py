@@ -24,7 +24,7 @@ from theme import THEMES, DEFAULT_THEME, get_theme, apply_theme
 import feature_flags as ff
 
 # ── Page modules ──────────────────────────────────────────────
-from views import page_dashboard, page_intelligence, page_analytics, page_edit, page_import_export
+from views import page_dashboard, page_intelligence, page_analytics, page_edit, page_import_export, page_trips
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -127,6 +127,7 @@ def build_sidebar(t: dict) -> None:
         "📊 Analytics":       "analytics",
         "✏️ Edit & Delete":   "edit",
         "📤 Import / Export": "import_export",
+        "✈️ Trips":           "trips",
         "⚙️ Settings":        "settings",
     }
     if ff.HAS_BUDGET:            pages["🎯 Budgets"]            = "budgets"
@@ -187,6 +188,9 @@ elif page == "edit":
 
 elif page == "import_export":
     page_import_export.render(**ctx)
+
+elif page == "trips":
+    page_trips.render(**ctx)
 
 elif page == "budgets" and ff.HAS_BUDGET:
     from page_helpers import hero
