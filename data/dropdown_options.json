@@ -13,6 +13,7 @@
         "Gardening",
         "Groceries",
         "Household",
+        "Ice Cream",
         "Juices",
         "Kitchen Accessories",
         "Masala",
@@ -21,6 +22,7 @@
         "Personal Care and Hygiene",
         "Photos",
         "Picnic Things",
+        "Salads",
         "Seafood",
         "Snacks",
         "Spices",
@@ -51,6 +53,7 @@
         "Fruits": [],
         "Furnishing & Decor": [],
         "Groceries": [
+            "Dry Fruits",
             "Noodles",
             "Rice"
         ],
@@ -97,11 +100,18 @@
         ],
         "Baby Shopping": [
             "Baby Gear and Equipments",
+            "Clothes",
             "Creams",
+            "Daipers",
+            "Diapers",
             "Food"
         ],
         "Gardening": [],
-        "Baking": []
+        "Baking": [
+            "Cutlery"
+        ],
+        "Salads": [],
+        "Ice Cream": []
     },
     "shops": [
         "Aiko Sushi",

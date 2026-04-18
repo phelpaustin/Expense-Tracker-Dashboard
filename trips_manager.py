@@ -26,14 +26,75 @@ _TRIPS_FILE = os.path.join("data", "trips.json")
 
 # ── Trip categories ────────────────────────────────────────────
 TRIP_CATEGORIES = [
+    # Food & Drink
     "🍽️ Food & Drink",
-    "🚌 Transport",
+    "🌅 Breakfast",
+    "☀️ Lunch",
+    "🌙 Dinner",
+    "☕ Coffee",
+    "🍵 Tea",
+    "☕ Café",
+    "🍺 Alcohol",
+    "🧃 Groceries",
+    "🍕 Takeaway",
+    # Transport
+    "🚌 Bus Fare",
+    "🚆 Train Fare",
+    "✈️ Flights",
+    "🚢 Ferry / Cruise",
+    "🚇 Metro / Subway",
+    "🚡 Cable Car / Tram",
+    "🚕 Taxi / Rideshare",
+    "🛵 Moped / Scooter",
+    "🚲 Bicycle / E-Bike",
+    "🎫 Travel Pass",
+    "⛽ Petrol / Fuel",
+    "🛣️ Toll",
+    "🅿️ Parking",
+    "🚗 Car Rental",
+    # Stay
     "🏨 Stay",
+    "🏕️ Camping",
+    "🏠 Airbnb / Rental",
+    "🛏️ Hostel",
+    # Activities
     "🎡 Activity",
+    "🏛️ Museum / Sights",
+    "🎭 Shows / Events",
+    "🏖️ Beach / Water",
+    "⛷️ Sports / Adventure",
+    "🧖 Spa / Wellness",
+    "🎲 Nightlife",
+    "🗺️ Tours / Guides",
+    # Shopping
     "🛍️ Shopping",
+    "👗 Clothing",
+    "💄 Beauty",
+    "📸 Electronics",
+    "📚 Books / Media",
+    "🧴 Toiletries",
+    # Health
     "🏥 Health",
+    "💊 Pharmacy",
+    "🦷 Dental",
+    "🩺 Doctor / Clinic",
+    "🧪 Tests / Lab",
+    # Communication
     "📱 Communication",
-    "🎁 Gifts",
+    "📶 SIM / Data",
+    "🌐 Internet / WiFi",
+    "📞 Phone Calls",
+    "📬 Postage / Courier",
+    # Money
+    "💱 Currency Exchange",
+    "🏧 ATM Fees",
+    "🧾 Visa / Permits",
+    "🔒 Insurance",
+    # Other
+    "🎁 Gifts & Souvenirs",
+    "🧺 Laundry",
+    "👶 Kids / Family",
+    "🐾 Pet Care",
     "💡 Other",
 ]
 

@@ -49,15 +49,76 @@ _STATUS_COLORS = {
 }
 
 _CAT_ICON = {
-    "🍽️ Food & Drink": "🍽️",
-    "🚌 Transport":    "🚌",
-    "🏨 Stay":         "🏨",
-    "🎡 Activity":     "🎡",
-    "🛍️ Shopping":    "🛍️",
-    "🏥 Health":       "🏥",
-    "📱 Communication": "📱",
-    "🎁 Gifts":         "🎁",
-    "💡 Other":         "💡",
+    # 🍽️ Food & Drink
+    "🍽️ Food & Drink":       "🍽️",
+    "🌅 Breakfast":          "🌅",
+    "☀️ Lunch":              "☀️",
+    "🌙 Dinner":             "🌙",
+    "☕ Coffee":              "☕",
+    "🍵 Tea":                "🍵",
+    "☕ Café":                "☕",
+    "🍺 Alcohol":            "🍺",
+    "🧃 Groceries":          "🧃",
+    "🍕 Takeaway":           "🍕",
+    # 🚌 Transport
+    "🚌 Bus Fare":           "🚌",
+    "🚆 Train Fare":         "🚆",
+    "✈️ Flights":            "✈️",
+    "🚢 Ferry / Cruise":     "🚢",
+    "🚇 Metro / Subway":     "🚇",
+    "🚡 Cable Car / Tram":   "🚡",
+    "🚕 Taxi / Rideshare":   "🚕",
+    "🛵 Moped / Scooter":    "🛵",
+    "🚲 Bicycle / E-Bike":   "🚲",
+    "🎫 Travel Pass":        "🎫",
+    "⛽ Petrol / Fuel":      "⛽",
+    "🛣️ Toll":              "🛣️",
+    "🅿️ Parking":           "🅿️",
+    "🚗 Car Rental":         "🚗",
+    # 🏨 Stay
+    "🏨 Stay":               "🏨",
+    "🏕️ Camping":           "🏕️",
+    "🏠 Airbnb / Rental":    "🏠",
+    "🛏️ Hostel":            "🛏️",
+    # 🎡 Activities
+    "🎡 Activity":           "🎡",
+    "🏛️ Museum / Sights":   "🏛️",
+    "🎭 Shows / Events":     "🎭",
+    "🏖️ Beach / Water":     "🏖️",
+    "⛷️ Sports / Adventure": "⛷️",
+    "🧖 Spa / Wellness":     "🧖",
+    "🎲 Nightlife":          "🎲",
+    "🗺️ Tours / Guides":    "🗺️",
+    # 🛍️ Shopping
+    "🛍️ Shopping":          "🛍️",
+    "👗 Clothing":           "👗",
+    "💄 Beauty":             "💄",
+    "📸 Electronics":        "📸",
+    "📚 Books / Media":      "📚",
+    "🧴 Toiletries":         "🧴",
+    # 🏥 Health
+    "🏥 Health":             "🏥",
+    "💊 Pharmacy":           "💊",
+    "🦷 Dental":             "🦷",
+    "🩺 Doctor / Clinic":    "🩺",
+    "🧪 Tests / Lab":        "🧪",
+    # 📱 Communication
+    "📱 Communication":      "📱",
+    "📶 SIM / Data":         "📶",
+    "🌐 Internet / WiFi":    "🌐",
+    "📞 Phone Calls":        "📞",
+    "📬 Postage / Courier":  "📬",
+    # 💰 Money
+    "💱 Currency Exchange":  "💱",
+    "🏧 ATM Fees":           "🏧",
+    "🧾 Visa / Permits":     "🧾",
+    "🔒 Insurance":          "🔒",
+    # 🎁 Other
+    "🎁 Gifts & Souvenirs":  "🎁",
+    "🧺 Laundry":            "🧺",
+    "👶 Kids / Family":      "👶",
+    "🐾 Pet Care":           "🐾",
+    "💡 Other":              "💡",
 }
 
 
@@ -136,33 +197,36 @@ def _render_trip_card(trip: dict, t: dict) -> None:
     pct = min((spent / budget * 100), 100) if budget else None
     bar_color = t["danger"] if pct and pct > 90 else (t["warning"] if pct and pct > 70 else t["success"])
 
-    st.markdown(
-        f"""<div style='{_card_style(t)}'>
-            <div style='display:flex;align-items:flex-start;justify-content:space-between;'>
-                <div>
-                    <div style='font-size:1.15rem;font-weight:800;
-                                color:{t["text_primary"]};letter-spacing:-0.02em;'>
-                        🗺️ {trip['name']}
-                    </div>
-                    <div style='font-size:0.82rem;color:{t["text_muted"]};margin-top:2px;'>
-                        📍 {trip.get('destination','—')} &nbsp;·&nbsp; {date_range}
-                        &nbsp;·&nbsp; {dur} day{'s' if dur != 1 else ''}
-                    </div>
-                </div>
-                <div style='text-align:right;'>
-                    {_badge(status, status_color)}
-                    <div style='font-size:1.35rem;font-weight:800;color:{t["text_primary"]};
-                                margin-top:6px;letter-spacing:-0.02em;'>
-                        {_fmt(spent, cur)}
-                    </div>
-                    {'<div style="font-size:0.75rem;color:' + t["text_muted"] + ';">of ' +
-                     _fmt(budget, cur) + ' budget</div>' if budget else ''}
-                </div>
-            </div>
-            {_budget_bar(pct, bar_color, t) if pct is not None else ""}
-        </div>""",
-        unsafe_allow_html=True,
+    _card_dur_label  = "days" if dur != 1 else "day"
+    _card_budget_html = (
+        "<div style='font-size:0.75rem;color:" + t["text_muted"] + ";'>of "
+        + _fmt(budget, cur) + " budget</div>"
+    ) if budget else ""
+    _card_bar_html = _budget_bar(pct, bar_color, t) if pct is not None else ""
+    _card_html = (
+        "<div style='" + _card_style(t) + "'>"
+        "<div style='display:flex;align-items:flex-start;justify-content:space-between;'>"
+        "<div>"
+        "<div style='font-size:1.15rem;font-weight:800;color:" + t["text_primary"] + ";letter-spacing:-0.02em;'>"
+        "🗺️ " + trip["name"] +
+        "</div>"
+        "<div style='font-size:0.82rem;color:" + t["text_muted"] + ";margin-top:2px;'>"
+        "📍 " + trip.get("destination", "—") + " &nbsp;·&nbsp; " + date_range +
+        " &nbsp;·&nbsp; " + str(dur) + " " + _card_dur_label +
+        "</div>"
+        "</div>"
+        "<div style='text-align:right;'>"
+        + _badge(status, status_color) +
+        "<div style='font-size:1.35rem;font-weight:800;color:" + t["text_primary"] + ";margin-top:6px;letter-spacing:-0.02em;'>"
+        + _fmt(spent, cur) +
+        "</div>"
+        + _card_budget_html +
+        "</div>"
+        "</div>"
+        + _card_bar_html +
+        "</div>"
     )
+    st.markdown(_card_html, unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
@@ -335,47 +399,48 @@ def _render_trip_detail(trip_id: str, t: dict) -> None:
     if start and end:
         date_range = f"{start.strftime('%d %b %Y')}  →  {end.strftime('%d %b %Y')}"
 
-    _desc_html = (
-        f'<div style="margin-top:6px;font-size:0.8rem;color:rgba(255,255,255,0.7);">'
-        f'{trip.get("description","")}</div>'
-        if trip.get("description") else ""
+    _dur_label   = "days" if dur != 1 else "day"
+    _desc_block  = (
+        "<div style='margin-top:6px;font-size:0.8rem;color:rgba(255,255,255,0.7);'>"
+        + trip.get("description", "")
+        + "</div>"
+    ) if trip.get("description") else ""
+    _budget_block = (
+        "<div style='font-size:0.8rem;color:rgba(255,255,255,0.7);'>of "
+        + _fmt(budget, cur)
+        + " budget</div>"
+    ) if budget else "<div style='font-size:0.8rem;color:rgba(255,255,255,0.7);'>total spent</div>"
+    _card_bg     = _card_style(t) + "background:" + t["gradient"] + ";border:none;"
+    _spent_fmt   = _fmt(spent, cur)
+    _hero_html   = (
+        "<div style='" + _card_bg + "'>"
+        "<div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;'>"
+        "<div>"
+        "<div style='font-size:1.6rem;font-weight:800;color:white;letter-spacing:-0.03em;'>"
+        "🗺️ " + trip["name"] +
+        "</div>"
+        "<div style='font-size:0.85rem;color:rgba(255,255,255,0.8);margin-top:4px;'>"
+        "📍 " + trip.get("destination", "—") + " &nbsp;·&nbsp; " + date_range +
+        " &nbsp;·&nbsp; " + str(dur) + " " + _dur_label +
+        "</div>"
+        + _desc_block +
+        "</div>"
+        "<div style='text-align:right;'>"
+        "<div style='font-size:2rem;font-weight:800;color:white;letter-spacing:-0.03em;'>"
+        + _spent_fmt +
+        "</div>"
+        + _budget_block +
+        "<div style='margin-top:4px;'>"
+        "<span style='background:rgba(255,255,255,0.2);color:white;border-radius:6px;"
+        "padding:2px 10px;font-size:0.72rem;font-weight:700;'>"
+        + status +
+        "</span>"
+        "</div>"
+        "</div>"
+        "</div>"
+        "</div>"
     )
-    _budget_html = (
-        f'<div style="font-size:0.8rem;color:rgba(255,255,255,0.7);">of {_fmt(budget, cur)} budget</div>'
-        if budget else
-        '<div style="font-size:0.8rem;color:rgba(255,255,255,0.7);">total spent</div>'
-    )
-    _days_s = "s" if dur != 1 else ""
-
-    st.markdown(
-        f"""<div style='{_card_style(t)}background:{t["gradient"]};border:none;'>
-            <div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;'>
-                <div>
-                    <div style='font-size:1.6rem;font-weight:800;color:white;letter-spacing:-0.03em;'>
-                        🗺️ {trip['name']}
-                    </div>
-                    <div style='font-size:0.85rem;color:rgba(255,255,255,0.8);margin-top:4px;'>
-                        📍 {trip.get('destination','—')} &nbsp;·&nbsp; {date_range}
-                        &nbsp;·&nbsp; {dur} day{_days_s}
-                    </div>
-                    {_desc_html}
-                </div>
-                <div style='text-align:right;'>
-                    <div style='font-size:2rem;font-weight:800;color:white;letter-spacing:-0.03em;'>
-                        {_fmt(spent, cur)}
-                    </div>
-                    {_budget_html}
-                    <div style='margin-top:4px;'>
-                        <span style='background:rgba(255,255,255,0.2);color:white;border-radius:6px;
-                                     padding:2px 10px;font-size:0.72rem;font-weight:700;'>
-                            {status}
-                        </span>
-                    </div>
-                </div>
-            </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+    st.markdown(_hero_html, unsafe_allow_html=True)
 
     # ── KPI row ────────────────────────────────────────────────
     k1, k2, k3, k4 = st.columns(4)
@@ -552,11 +617,12 @@ def _render_day_view(trip: dict, expenses: list[dict], cur: str, t: dict) -> Non
 
 
 def _expense_row(exp: dict, cur: str, t: dict) -> None:
-    """Single expense row with delete button."""
+    """Single expense row with edit and delete buttons."""
     cat_icon = _CAT_ICON.get(exp.get("category", ""), "💡")
     notes    = f" — {exp['notes']}" if exp.get("notes") else ""
+    edit_key = f"editing_exp_{exp['id']}"
 
-    col_a, col_b = st.columns([4, 1])
+    col_a, col_b, col_c = st.columns([4, 1, 1])
     with col_a:
         st.markdown(
             f"<div style='display:flex;align-items:center;gap:8px;padding:4px 0;'>"
@@ -571,14 +637,84 @@ def _expense_row(exp: dict, cur: str, t: dict) -> None:
             unsafe_allow_html=True,
         )
     with col_b:
+        if st.button("✏️", key=f"edit_exp_{exp['id']}", help="Edit expense"):
+            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+            st.rerun()
+    with col_c:
         if st.button("🗑️", key=f"del_exp_{exp['id']}", help="Delete"):
             delete_expense(exp["id"])
             st.rerun()
 
+    if st.session_state.get(edit_key):
+        _render_edit_expense_form(exp, cur, t, edit_key)
 
-# ═══════════════════════════════════════════════════════════════
-#  ALL EXPENSES TABLE
-# ═══════════════════════════════════════════════════════════════
+
+def _render_edit_expense_form(exp: dict, cur: str, t: dict, edit_key: str) -> None:
+    """Inline edit form for an existing expense."""
+    exp_id  = exp["id"]
+    is_stay = exp.get("is_stay", False)
+    with st.form(key=f"edit_form_{exp_id}", clear_on_submit=False):
+        st.markdown(
+            f"<small style='color:{t['text_muted']}'>✏️ Editing: <b>{exp.get('item','')}</b></small>",
+            unsafe_allow_html=True,
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            new_item = st.text_input("Item / Description *", value=exp.get("item", ""), key=f"ei_item_{exp_id}")
+            cat_idx  = TRIP_CATEGORIES.index(exp["category"]) if exp.get("category") in TRIP_CATEGORIES else 0
+            new_cat  = st.selectbox("Category *", TRIP_CATEGORIES, index=cat_idx, key=f"ei_cat_{exp_id}")
+        with c2:
+            new_amt  = st.number_input(
+                f"Amount ({cur}) *", min_value=0.0, step=0.01,
+                value=float(exp.get("amount", 0)), key=f"ei_amt_{exp_id}",
+            )
+            new_notes = st.text_input("Notes", value=exp.get("notes", ""), key=f"ei_notes_{exp_id}")
+
+        if is_stay:
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                new_ci = st.date_input("Check-in *", value=_parse_date(exp.get("check_in")) or date.today(), key=f"ei_ci_{exp_id}")
+            with sc2:
+                new_co = st.date_input("Check-out *", value=_parse_date(exp.get("check_out")) or date.today(), key=f"ei_co_{exp_id}")
+            new_date = None
+        else:
+            new_date = st.date_input("Date *", value=_parse_date(exp.get("date")) or date.today(), key=f"ei_date_{exp_id}")
+            new_ci = new_co = None
+
+        sb1, sb2 = st.columns(2)
+        with sb1:
+            save_btn = st.form_submit_button("💾 Save Changes")
+        with sb2:
+            cancel_btn = st.form_submit_button("✖ Cancel")
+
+        if cancel_btn:
+            st.session_state[edit_key] = False
+            st.rerun()
+        if save_btn:
+            if not new_item:
+                st.error("Item is required.")
+            elif new_amt <= 0:
+                st.error("Amount must be > 0.")
+            elif is_stay and new_ci >= new_co:
+                st.error("Check-out must be after check-in.")
+            else:
+                save_expense(
+                    trip_id=exp["trip_id"],
+                    item=new_item,
+                    category=new_cat,
+                    amount=new_amt,
+                    currency=cur,
+                    expense_date=new_date,
+                    is_stay=is_stay,
+                    check_in=new_ci,
+                    check_out=new_co,
+                    notes=new_notes,
+                    expense_id=exp_id,
+                )
+                st.session_state[edit_key] = False
+                st.success("✅ Expense updated!")
+                st.rerun()
+
 
 def _render_all_expenses(expenses: list[dict], cur: str, t: dict) -> None:
     if not expenses:
