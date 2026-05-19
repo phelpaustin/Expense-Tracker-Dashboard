@@ -127,6 +127,77 @@ def _quick_intelligence(df: pd.DataFrame, df_period: pd.DataFrame) -> None:
         st.metric("🏆 Top Category", top_cat)
 
 
+# ── Grouped transaction view ───────────────────────────────────
+
+def _render_transaction_groups(df: pd.DataFrame, t: dict) -> None:
+    """
+    Club individual expense rows into transactions.
+    A transaction = unique (Date, Shop) pair.
+    Each transaction renders as an expander; the items inside are a
+    clean dataframe showing Category, Item, Brand, Qty, Unit and Price.
+    """
+    df2 = df.copy()
+
+    # Normalise date to a plain Python date for reliable grouping
+    df2["Date"] = pd.to_datetime(
+        normalize_dataframe_dates(df2, "Date")["Date"], errors="coerce"
+    ).dt.date
+
+    # Coerce price
+    df2["PricePaid"] = pd.to_numeric(df2["PricePaid"], errors="coerce").fillna(0)
+
+    # Fill missing shop so grouping never breaks
+    df2["Shop"] = df2["Shop"].fillna("Unknown Shop").replace("", "Unknown Shop")
+
+    # Sort most-recent first
+    df2 = df2.sort_values("Date", ascending=False)
+
+    # Build (Date, Shop) groups maintaining sort order
+    groups = df2.groupby(["Date", "Shop"], sort=False)
+
+    # Columns to show inside each transaction's item table
+    item_cols_wanted = ["Category", "Subcategory", "Item", "Brand", "Quantity", "QuantityUnit", "PricePaid", "Currency"]
+    item_cols = [c for c in item_cols_wanted if c in df2.columns]
+
+    for (txn_date, shop), grp in groups:
+        total = grp["PricePaid"].sum()
+        n_items = len(grp)
+        date_str = format_date(txn_date) if txn_date else "—"
+
+        # Build a compact category summary for the expander label
+        if "Category" in grp.columns:
+            cats = grp["Category"].dropna().unique().tolist()
+            cat_summary = ", ".join(cats[:3])
+            if len(cats) > 3:
+                cat_summary += f" +{len(cats) - 3}"
+        else:
+            cat_summary = ""
+
+        label = (
+            f"📅 {date_str}  ·  🏪 {shop}  ·  "
+            f"{n_items} item{'s' if n_items != 1 else ''}  ·  "
+            f"**{total:,.2f} SEK**"
+            + (f"  ·  _{cat_summary}_" if cat_summary else "")
+        )
+
+        with st.expander(label, expanded=False):
+            # Item table (clean, hide index)
+            display = grp[item_cols].copy().reset_index(drop=True)
+            if "PricePaid" in display.columns:
+                display = display.rename(columns={"PricePaid": "Price (SEK)"})
+            st.dataframe(display, hide_index=True, width='stretch')
+
+            # Transaction total row
+            st.markdown(
+                f"<div style='text-align:right; font-size:0.9rem; "
+                f"color:{t.get('text_muted','#94a3b8')}; margin-top:4px;'>"
+                f"Transaction total &nbsp; "
+                f"<span style='font-weight:700; color:{t.get('text_primary','#0f172a')};'>"
+                f"{total:,.2f} SEK</span></div>",
+                unsafe_allow_html=True,
+            )
+
+
 # ── Public page entry-point ────────────────────────────────────
 
 def render(df: pd.DataFrame, save_data, sheet, t: dict) -> None:
@@ -177,9 +248,9 @@ def render(df: pd.DataFrame, save_data, sheet, t: dict) -> None:
         st.markdown("")
         col1, col2 = st.columns([1.4, 1])
         with col1:
-            monthly_bar_chart(df_filtered, t)     # t passed explicitly ✓
+            monthly_bar_chart(df_filtered, t)
         with col2:
-            donut_chart(df_period, t)             # t passed explicitly ✓
+            donut_chart(df_period, t)
 
     if ff.HAS_INTELLIGENCE and not df_period.empty:
         _quick_intelligence(df, df_period)
@@ -204,10 +275,9 @@ def render(df: pd.DataFrame, save_data, sheet, t: dict) -> None:
             df_period["Category"].nunique() if "Category" in df_period.columns else "—",
         )
 
+    # ── Expense Records — grouped by (Date, Shop) transaction ─────
     st.markdown("### 🧾 Expense Records")
     if not df_period.empty:
-        disp = df_period.copy()
-        disp["Date"] = disp["Date"].apply(format_date)
-        st.dataframe(disp, width="stretch", hide_index=True)
+        _render_transaction_groups(df_period, t)
     else:
         st.info("No expenses for selected period.")

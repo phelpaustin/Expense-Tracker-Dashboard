@@ -739,7 +739,7 @@ def _render_all_expenses(expenses: list[dict], cur: str, t: dict) -> None:
         rows.append(row)
 
     df = pd.DataFrame(rows, columns=["Date", "Category", "Item", f"Amount ({cur})", "Notes"])
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    st.dataframe(df, hide_index=True, width='stretch')
 
     total = sum(e["amount"] for e in expenses)
     st.markdown(
@@ -796,7 +796,7 @@ def _render_charts(trip_id: str, expenses: list[dict], cur: str, t: dict) -> Non
                 margin=dict(t=48, b=8, l=0, r=0), height=340,
                 title_font=dict(color=t["text_secondary"], size=13),
             )
-            st.plotly_chart(fig, config={"displayModeBar": False}, use_container_width=True)
+            st.plotly_chart(fig, config={"displayModeBar": False}, width='stretch')
 
     # ── Daily spending bar ─────────────────────────────────────
     with col2:
@@ -824,7 +824,7 @@ def _render_charts(trip_id: str, expenses: list[dict], cur: str, t: dict) -> Non
             )
             fig2.update_layout(title="Daily Spending")
             st.plotly_chart(style_fig(fig2, t, height=340),
-                            config={"displayModeBar": False}, use_container_width=True)
+                            config={"displayModeBar": False}, width='stretch')
 
     # ── Category breakdown table ───────────────────────────────
     st.markdown("##### 📋 Category Breakdown")
@@ -835,7 +835,7 @@ def _render_charts(trip_id: str, expenses: list[dict], cur: str, t: dict) -> Non
                                 key=lambda x: x[1], reverse=True)
     ]
     if cat_rows:
-        st.dataframe(pd.DataFrame(cat_rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(cat_rows), hide_index=True, width='stretch')
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -932,9 +932,12 @@ def render(df, save_data, sheet, t: dict) -> None:
     ----------
     df        : Main expense DataFrame (unused here, kept for ctx compat)
     save_data : Main save callable (unused here)
-    sheet     : Storage handle (unused here)
+    sheet     : gspread Worksheet — used to sync trips to Google Sheets
     t         : Active theme dict — passed explicitly
     """
+    import trips_manager as _tm
+    _tm.init_gsheets(sheet)   # connect GSheets once per session; no-op if sheet is None
+
     hero("Trip Expense Tracker", "Track every spending on every trip", "✈️")
 
     # Init session state

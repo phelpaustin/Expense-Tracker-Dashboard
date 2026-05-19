@@ -393,7 +393,7 @@ def sidebar_add_expense(df, save_fn):
                 cy, cn = st.columns(2)
                 with cy:
                     if st.button(
-                        "✅ Yes, add anyway", key="dup_yes", use_container_width=True
+                        "✅ Yes, add anyway", key="dup_yes", width='stretch'
                     ):
                         _do_save(
                             st.session_state["_pending_new_rows"], df, save_fn
@@ -403,7 +403,7 @@ def sidebar_add_expense(df, save_fn):
                         st.rerun()
                 with cn:
                     if st.button(
-                        "❌ Cancel", key="dup_no", use_container_width=True
+                        "❌ Cancel", key="dup_no", width='stretch'
                     ):
                         for k in ("_dup_warning_active", "_dup_descs", "_pending_new_rows"):
                             st.session_state.pop(k, None)
@@ -477,7 +477,7 @@ def sidebar_add_expense(df, save_fn):
             with qc1:
                 if st.button(
                     "💾 Re-save", key="resave_last",
-                    type="primary", use_container_width=True
+                    type="primary", width='stretch'
                 ):
                     n = st.session_state.get("_last_saved_count", len(last_batch))
                     # Strip the last n rows from current df, append edited rows
@@ -490,7 +490,7 @@ def sidebar_add_expense(df, save_fn):
                     bump_data_version()
                     st.rerun()
             with qc2:
-                if st.button("✖ Dismiss", key="dismiss_last", use_container_width=True):
+                if st.button("✖ Dismiss", key="dismiss_last", width='stretch'):
                     for k in ("_last_saved_batch", "_last_saved_count"):
                         st.session_state.pop(k, None)
                     st.rerun()

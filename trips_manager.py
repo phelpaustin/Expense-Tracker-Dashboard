@@ -4,6 +4,8 @@
 #
 #  Persists trips and their expenses to  data/trips.json
 #  (same data/ folder used by dropdown_options.json).
+#  Also syncs to Google Sheets (worksheets: "Trips", "TripExpenses")
+#  when a gspread connection is available.
 #
 #  Data model
 #  ----------
@@ -126,11 +128,142 @@ def _new_id() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  LOW-LEVEL FILE I/O
+#  GOOGLE SHEETS SYNC
+# ═══════════════════════════════════════════════════════════════
+
+# Module-level state — set once per session via init_gsheets()
+_spreadsheet         = None
+_synced_from_gsheets = False
+
+TRIPS_WS_NAME    = "Trips"
+EXPENSES_WS_NAME = "TripExpenses"
+
+_TRIP_HEADERS = [
+    "id", "name", "destination", "start_date", "end_date",
+    "currency", "budget", "description", "status", "created_at",
+]
+_EXPENSE_HEADERS = [
+    "id", "trip_id", "item", "category", "amount", "currency",
+    "date", "is_stay", "check_in", "check_out", "notes",
+]
+
+
+def init_gsheets(sheet) -> None:
+    """
+    Call once at page render time with the main gspread worksheet object
+    (the same `sheet` passed through ctx in Main_Dashboard_App.py).
+
+    On the first call per session it pulls GSheets data into local JSON
+    so all reads stay fast.  Every subsequent _save_raw() call will also
+    write back to Google Sheets automatically.
+    """
+    global _spreadsheet, _synced_from_gsheets
+    if sheet is None:
+        return
+    try:
+        _spreadsheet = sheet.spreadsheet          # worksheet  →  spreadsheet
+        if not _synced_from_gsheets:
+            _pull_from_gsheets()                  # one-time startup sync
+            _synced_from_gsheets = True
+    except Exception as exc:
+        print(f"[trips_manager] GSheets init failed: {exc}")
+        _spreadsheet = None
+
+
+def _get_or_create_ws(name: str, headers: list):
+    """Return a worksheet by name, creating it (with header row) if missing."""
+    global _spreadsheet
+    if _spreadsheet is None:
+        return None
+    try:
+        try:
+            return _spreadsheet.worksheet(name)
+        except Exception:
+            ws = _spreadsheet.add_worksheet(
+                title=name, rows=1000, cols=len(headers)
+            )
+            ws.append_row(headers)
+            return ws
+    except Exception as exc:
+        print(f"[trips_manager] Could not get/create worksheet '{name}': {exc}")
+        return None
+
+
+def _load_from_gsheets() -> dict[str, Any] | None:
+    """Read trips + expenses from GSheets; return None on any failure."""
+    trips_ws    = _get_or_create_ws(TRIPS_WS_NAME,    _TRIP_HEADERS)
+    expenses_ws = _get_or_create_ws(EXPENSES_WS_NAME, _EXPENSE_HEADERS)
+    if trips_ws is None or expenses_ws is None:
+        return None
+    try:
+        trips    = trips_ws.get_all_records()
+        expenses = expenses_ws.get_all_records()
+
+        # Normalise types after GSheets string round-trip
+        for t in trips:
+            t["budget"] = float(t["budget"]) if t.get("budget") else None
+            for k in ("start_date", "end_date", "created_at"):
+                if not t.get(k):
+                    t[k] = None
+
+        for e in expenses:
+            e["amount"]  = float(e["amount"]) if e.get("amount") else 0.0
+            e["is_stay"] = str(e.get("is_stay", "")).lower() in ("true", "1", "yes")
+            for k in ("check_in", "check_out", "date"):
+                if not e.get(k):
+                    e[k] = None
+
+        return {"trips": trips, "expenses": expenses}
+    except Exception as exc:
+        print(f"[trips_manager] GSheets load failed: {exc}")
+        return None
+
+
+def _save_to_gsheets(data: dict[str, Any]) -> bool:
+    """Overwrite both GSheets worksheets with current data."""
+    trips_ws    = _get_or_create_ws(TRIPS_WS_NAME,    _TRIP_HEADERS)
+    expenses_ws = _get_or_create_ws(EXPENSES_WS_NAME, _EXPENSE_HEADERS)
+    if trips_ws is None or expenses_ws is None:
+        return False
+    try:
+        trips_ws.clear()
+        trips_ws.append_row(_TRIP_HEADERS)
+        for t in data.get("trips", []):
+            trips_ws.append_row(
+                [str(t.get(h, "") if t.get(h) is not None else "") for h in _TRIP_HEADERS]
+            )
+
+        expenses_ws.clear()
+        expenses_ws.append_row(_EXPENSE_HEADERS)
+        for e in data.get("expenses", []):
+            expenses_ws.append_row(
+                [str(e.get(h, "") if e.get(h) is not None else "") for h in _EXPENSE_HEADERS]
+            )
+        return True
+    except Exception as exc:
+        print(f"[trips_manager] GSheets save failed: {exc}")
+        return False
+
+
+def _pull_from_gsheets() -> None:
+    """
+    One-time startup pull: GSheets → local JSON.
+    Keeps reads fast (local file) while GSheets stays the source of truth.
+    """
+    data = _load_from_gsheets()
+    if data is not None:
+        os.makedirs("data", exist_ok=True)
+        with open(_TRIPS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, default=str)
+        print("[trips_manager] Pulled trip data from Google Sheets.")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  LOW-LEVEL FILE I/O  (reads JSON; writes JSON + GSheets)
 # ═══════════════════════════════════════════════════════════════
 
 def _load_raw() -> dict[str, Any]:
-    """Load raw JSON dict from disk; return empty scaffold if missing."""
+    """Load from local JSON (fast). GSheets is only read once at startup."""
     if not os.path.exists(_TRIPS_FILE):
         return {"trips": [], "expenses": []}
     with open(_TRIPS_FILE, "r", encoding="utf-8") as fh:
@@ -138,10 +271,12 @@ def _load_raw() -> dict[str, Any]:
 
 
 def _save_raw(data: dict[str, Any]) -> None:
-    """Write raw JSON dict to disk (creates data/ if needed)."""
+    """Write to local JSON AND sync to GSheets if connected."""
     os.makedirs("data", exist_ok=True)
     with open(_TRIPS_FILE, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, default=str)
+    if _spreadsheet is not None:
+        _save_to_gsheets(data)
 
 
 # ═══════════════════════════════════════════════════════════════

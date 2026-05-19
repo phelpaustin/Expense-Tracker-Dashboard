@@ -355,7 +355,7 @@ def notification_settings_ui(df: pd.DataFrame):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        if st.button("🧪 Test Email", use_container_width=True):
+        if st.button("🧪 Test Email", width='stretch'):
             with st.spinner("Sending test email..."):
                 success, error = test_email_configuration()
             if success:
@@ -364,7 +364,7 @@ def notification_settings_ui(df: pd.DataFrame):
                 st.error(f"❌ Failed: {error}")
 
     with col2:
-        if st.button("📧 Test Budget Alert", use_container_width=True):
+        if st.button("📧 Test Budget Alert", width='stretch'):
             with st.spinner("Sending budget alert..."):
                 success, error = send_budget_alert_email(df)
             if success:
@@ -373,7 +373,7 @@ def notification_settings_ui(df: pd.DataFrame):
                 st.error(f"❌ Failed: {error}")
 
     with col3:
-        if st.button("📊 Test Daily Summary", use_container_width=True):
+        if st.button("📊 Test Daily Summary", width='stretch'):
             with st.spinner("Sending daily summary..."):
                 success, error = send_daily_summary_email(df)
             if success:
@@ -420,7 +420,7 @@ def notification_settings_ui(df: pd.DataFrame):
 
     # ── Save Settings ────────────────────────────────────────────
     st.markdown("---")
-    if st.button("💾 Save Settings", type="primary", use_container_width=True):
+    if st.button("💾 Save Settings", type="primary", width='stretch'):
         new_settings = {
             "enable_alerts": enable_alerts,
             "alert_at_80": alert_80,

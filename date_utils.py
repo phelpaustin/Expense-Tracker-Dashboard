@@ -109,7 +109,7 @@ def normalize_dataframe_dates(df: pd.DataFrame, date_column: str = None) -> pd.D
     col = date_column or Columns.DATE
     
     if col in df.columns:
-        logger.info(f"Normalizing dates in column: {col}")
+        logger.debug(f"Normalizing dates in column: {col}")
         df[col] = df[col].apply(normalize_date)
     
     return df

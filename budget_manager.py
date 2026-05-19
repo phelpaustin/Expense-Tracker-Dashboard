@@ -317,7 +317,7 @@ def budget_dashboard_ui(df: pd.DataFrame):
 
         col_prev, col_drop, col_next = st.columns([1, 8, 1])
         with col_prev:
-            if st.button("◀", key="budget_prev_month", use_container_width=True,
+            if st.button("◀", key="budget_prev_month", width='stretch',
                          disabled=(st.session_state["budget_month_idx"] >= len(month_options) - 1),
                          help="Previous month"):
                 st.session_state["budget_month_idx"] += 1
@@ -335,7 +335,7 @@ def budget_dashboard_ui(df: pd.DataFrame):
             if new_idx != st.session_state["budget_month_idx"]:
                 st.session_state["budget_month_idx"] = new_idx
         with col_next:
-            if st.button("▶", key="budget_next_month", use_container_width=True,
+            if st.button("▶", key="budget_next_month", width='stretch',
                          disabled=(st.session_state["budget_month_idx"] <= 0),
                          help="Next month"):
                 st.session_state["budget_month_idx"] -= 1
