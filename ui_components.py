@@ -522,6 +522,8 @@ def filter_section(df):
     selected_shops = st.sidebar.multiselect("Shop", options=shops)
 
     # Price slider
+    if Columns.PRICE_PAID in df.columns:
+        df[Columns.PRICE_PAID] = pd.to_numeric(df[Columns.PRICE_PAID], errors="coerce")
     price_max = float(df[Columns.PRICE_PAID].max()) if Columns.PRICE_PAID in df.columns and not df[Columns.PRICE_PAID].isna().all() else 1000.0
     min_price, max_price = st.sidebar.slider("Price Range (SEK)", 0.0, price_max, (0.0, price_max))
 

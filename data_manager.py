@@ -337,24 +337,26 @@ def clean_data(df):
     """
     try:
         logger.info("Cleaning data")
-        
-        # Use Columns constant instead of magic string
+
         if Columns.DATE in df.columns:
             df[Columns.DATE] = pd.to_datetime(
-                df[Columns.DATE], 
-                errors="coerce"
+                df[Columns.DATE], errors="coerce"
             ).dt.date
 
-        # Trim whitespace from string columns
+        # ── FIX: coerce numeric columns before stripping strings ──
+        for col in [Columns.PRICE_PAID, Columns.QUANTITY, Columns.PRICE_PER_UNIT]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Only strip string columns (skip numeric ones)
         for col in df.select_dtypes(include=["object"]).columns:
             df[col] = df[col].astype(str).str.strip()
-        
+
         logger.info("Data cleaning completed")
         return df
-    
+
     except Exception as e:
         ErrorHandler.log_error(e, "cleaning data", show_user=False)
-        # Return original dataframe if cleaning fails
         return df
 
 
