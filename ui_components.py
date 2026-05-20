@@ -680,13 +680,19 @@ def inline_edit_table(df, save_fn, sheet=None):
         return
 
     # ---------------- EDITABLE TABLE ----------------
+    editable_df = (
+        filtered_df
+        .drop(columns=["Year", "Month", "MonthName"])
+        .reset_index(drop=True)
+    )
+    
     edited_df = st.data_editor(
-        filtered_df.drop(columns=["Year", "Month", "MonthName"]),
+        editable_df,
         num_rows="dynamic",
         width="stretch",
         key="edit_filtered",
         hide_index=True
-    )
+)
 
     # ---------------- SAVE CHANGES ----------------
     if not edited_df.equals(filtered_df.drop(columns=["Year", "Month", "MonthName"])):
@@ -707,10 +713,28 @@ def inline_edit_table(df, save_fn, sheet=None):
                 st.stop()
 
             # Auto-recompute PricePerUnit
+            # Ensure numeric columns are numeric
+            if "PricePaid" in edited_df.columns:
+                edited_df["PricePaid"] = pd.to_numeric(
+                    edited_df["PricePaid"],
+                    errors="coerce"
+                )
+            
+            if "Quantity" in edited_df.columns:
+                edited_df["Quantity"] = pd.to_numeric(
+                    edited_df["Quantity"],
+                    errors="coerce"
+                )
+            
+            # Auto-recompute PricePerUnit safely
             if "PricePaid" in edited_df.columns and "Quantity" in edited_df.columns:
                 edited_df["PricePerUnit"] = edited_df.apply(
                     lambda x: round(x["PricePaid"] / x["Quantity"], 2)
-                    if pd.notnull(x["PricePaid"]) and pd.notnull(x["Quantity"]) and x["Quantity"] != 0
+                    if (
+                        pd.notnull(x["PricePaid"])
+                        and pd.notnull(x["Quantity"])
+                        and x["Quantity"] != 0
+                    )
                     else 0,
                     axis=1
                 )
