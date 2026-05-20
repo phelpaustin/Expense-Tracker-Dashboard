@@ -99,8 +99,10 @@ def load_data(_sheet=None, version=0):
     """
     Load data from Google Sheets or local CSV (reactive via version).
 
-    Deduplication is applied immediately after loading so the returned
-    DataFrame is always free of fully identical rows.
+    Returns raw data as stored — deduplication and write-back are
+    handled by ensure_no_duplicates() called once on app startup,
+    so duplicates are removed from the source permanently rather
+    than only in memory.
 
     Args:
         _sheet: Google Sheets worksheet object
@@ -115,7 +117,7 @@ def load_data(_sheet=None, version=0):
             records = _sheet.get_all_records()
             df = pd.DataFrame(records)
             logger.info(f"Loaded {len(df)} rows from Google Sheets")
-            return deduplicate_entries(df)
+            return df
         except Exception as e:
             DataErrorHandler.handle_load_error(e, "Google Sheets")
             # Fall through to local CSV
@@ -126,7 +128,7 @@ def load_data(_sheet=None, version=0):
             logger.info(f"Loading data from {LOCAL_CSV_FILE}")
             df = pd.read_csv(LOCAL_CSV_FILE)
             logger.info(f"Loaded {len(df)} rows from local CSV")
-            return deduplicate_entries(df)
+            return df
         else:
             logger.info("No local CSV found, returning empty DataFrame")
             return pd.DataFrame(columns=EXPECTED_COLUMNS)
@@ -146,6 +148,43 @@ def load_data(_sheet=None, version=0):
     except Exception as e:
         DataErrorHandler.handle_load_error(e, "local CSV")
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
+
+
+def ensure_no_duplicates(df: pd.DataFrame, sheet=None) -> pd.DataFrame:
+    """
+    One-time startup check: if the loaded DataFrame contains duplicates,
+    remove them and immediately write the cleaned data back to the source
+    (Google Sheets and/or local CSV) so the duplicates are gone permanently.
+
+    Call this once in Main_Dashboard_App.py right after load_data().
+    It is a no-op when no duplicates are found, so it is safe to call
+    on every startup with zero performance cost in the normal case.
+
+    Args:
+        df:    The DataFrame returned by load_data().
+        sheet: Google Sheets worksheet object (optional).
+
+    Returns:
+        pd.DataFrame: Deduplicated DataFrame (unchanged if no dupes found).
+    """
+    if df.empty:
+        return df
+
+    clean_df = deduplicate_entries(df)
+    removed = len(df) - len(clean_df)
+
+    if removed > 0:
+        logger.info(
+            f"ensure_no_duplicates: writing back {len(clean_df)} rows "
+            f"after removing {removed} duplicate(s)"
+        )
+        save_data(clean_df, sheet=sheet)
+        st.toast(
+            f"🗑️ Removed {removed} duplicate entr{'y' if removed == 1 else 'ies'} and saved.",
+            icon="ℹ️",
+        )
+
+    return clean_df
 
 
 @log_function_call
@@ -170,7 +209,7 @@ def save_data(df, sheet=None):
     if removed > 0:
         st.toast(
             f"🗑️ Removed {removed} duplicate entr{'y' if removed == 1 else 'ies'}.",
-            icon="ℹ️"
+            icon="ℹ️",
         )
 
     save_successful = False
@@ -223,7 +262,6 @@ def save_data(df, sheet=None):
         except Exception as backup_error:
             logger.error(f"Backup save also failed: {str(backup_error)}")
 
-    # Show appropriate message to user
     if save_successful:
         if len(errors) > 0:
             st.warning(f"⚠️ Saved to backup location. Primary save failed: {errors[0]}")
@@ -322,54 +360,14 @@ def export_data_bytes(df, file_type="csv"):
         return None, None
 
 
-def deduplicate_entries(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Remove fully duplicate rows — identical across all core columns.
-
-    Keeps the first occurrence of each duplicate group. Called from
-    load_data() (fixes existing stored data), save_data() (prevents
-    new duplicates from being persisted), and clean_data() (when
-    called explicitly from the app layer).
-
-    A duplicate is two or more rows sharing the same value in every
-    column of Columns.all_core():
-        Date, ExpenseType, Category, Subcategory, Item, Brand, Shop,
-        PricePaid, Currency, Quantity, QuantityUnit, PricePerUnit.
-
-    If even one field differs the rows are treated as distinct and
-    both are kept.
-
-    Args:
-        df: DataFrame to deduplicate
-
-    Returns:
-        pd.DataFrame: Deduplicated DataFrame with reset index
-    """
-    if df.empty:
-        return df
-
-    # Only use columns that actually exist (guards partial-schema imports)
-    dedup_cols = [col for col in Columns.all_core() if col in df.columns]
-    if not dedup_cols:
-        return df
-
-    before = len(df)
-    df = df.drop_duplicates(subset=dedup_cols, keep="first").reset_index(drop=True)
-    removed = before - len(df)
-
-    if removed > 0:
-        logger.info(f"Removed {removed} duplicate row(s)")
-
-    return df
-
-
 def clean_data(df):
     """
-    Standardises and cleans expense data.
+    Standardizes and cleans expense data.
 
-    - Strips whitespace from string columns
-    - Normalises 'Date' to date-only
-    - Removes fully duplicate rows via deduplicate_entries()
+    - Strips whitespace
+    - Normalizes 'Date' to date-only
+    - Ensures consistent column types
+    - Removes fully duplicate rows
 
     Args:
         df: DataFrame to clean
@@ -400,6 +398,46 @@ def clean_data(df):
         return df
 
 
+def deduplicate_entries(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove fully duplicate rows — identical across all core columns.
+
+    Keeps the first occurrence of each duplicate group and drops the
+    rest. Safe to call from cached functions because it makes no
+    Streamlit UI calls.
+
+    A duplicate is defined as two or more rows sharing the same value
+    in every column of Columns.all_core():
+        Date, ExpenseType, Category, Subcategory, Item, Brand, Shop,
+        PricePaid, Currency, Quantity, QuantityUnit, PricePerUnit.
+
+    If even one field differs the rows are treated as distinct entries
+    and both are kept.
+
+    Args:
+        df: DataFrame to deduplicate
+
+    Returns:
+        pd.DataFrame: Deduplicated DataFrame with reset index
+    """
+    if df.empty:
+        return df
+
+    # Only use columns that actually exist (guards partial-schema imports)
+    dedup_cols = [col for col in Columns.all_core() if col in df.columns]
+    if not dedup_cols:
+        return df
+
+    before = len(df)
+    df = df.drop_duplicates(subset=dedup_cols, keep="first").reset_index(drop=True)
+    removed = before - len(df)
+
+    if removed > 0:
+        logger.info(f"Removed {removed} duplicate row(s)")
+
+    return df
+
+
 def bump_data_version():
     """Increment version counter so cached data refreshes."""
     try:
@@ -425,7 +463,7 @@ def validate_dataframe_schema(df: pd.DataFrame) -> bool:
         bool: True if valid, False otherwise
     """
     if df.empty:
-        return True
+        return True  # Empty is valid
 
     missing_required = [
         col for col in Columns.required()
@@ -447,6 +485,7 @@ def validate_dataframe_schema(df: pd.DataFrame) -> bool:
 __all__ = [
     "init_storage",
     "load_data",
+    "ensure_no_duplicates",
     "save_data",
     "import_data",
     "export_data_bytes",

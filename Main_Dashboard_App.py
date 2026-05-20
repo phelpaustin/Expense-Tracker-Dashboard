@@ -3,7 +3,7 @@
 # Responsibilities (only):
 # 1. Streamlit page config
 # 2. Theme application
-# 3. Data loading + multi-user session isolation
+# 3. Data loading + one-time dedup write-back + multi-user session isolation
 # 4. Sidebar construction
 # 5. Page routing
 #
@@ -15,10 +15,9 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
-
 from config import Columns
 from date_utils import normalize_dataframe_dates
-from data_manager import init_storage, load_data, save_data, clean_data  # ← added clean_data
+from data_manager import init_storage, load_data, ensure_no_duplicates, save_data
 from analytics import what_if_simulation
 from settings_page import render_settings_page
 from theme import THEMES, DEFAULT_THEME, get_theme, apply_theme
@@ -50,11 +49,21 @@ def get_sheet():
     return init_storage()
 
 sheet = get_sheet()
+
 version = st.session_state.get("data_version", 0)
 df_raw = load_data(_sheet=sheet, version=version)
 
 if df_raw is None or not isinstance(df_raw, pd.DataFrame):
     df_raw = pd.DataFrame()
+
+# ── One-time dedup write-back ──────────────────────────────────
+# On the very first load after the app starts (version == 0), check
+# whether the stored data contains duplicates. If it does, remove them
+# and write the cleaned DataFrame back to the source immediately so
+# subsequent restarts load clean data and never show the "Removed N
+# duplicates" log message again.
+if version == 0 and not df_raw.empty:
+    df_raw = ensure_no_duplicates(df_raw, sheet=sheet)
 
 if not df_raw.empty and "Date" in df_raw.columns:
     df_raw["Date"] = normalize_dataframe_dates(df_raw, "Date")["Date"]
@@ -65,20 +74,6 @@ for col in [
 ]:
     if col not in df_raw.columns:
         df_raw[col] = None
-
-# ── Clean + deduplicate on every load ─────────────────────────
-# clean_data() strips whitespace, normalises dates, and removes
-# fully identical duplicate rows via deduplicate_entries().
-# The result is saved back immediately so the source file/sheet
-# is also cleaned — duplicates won't reappear on next restart.
-if not df_raw.empty:
-    df_cleaned = clean_data(df_raw.copy())
-    if len(df_cleaned) < len(df_raw):
-        # Duplicates were found — persist the cleaned data right away
-        save_data(df_cleaned, sheet=sheet)
-        df_raw = df_cleaned
-    else:
-        df_raw = df_cleaned
 
 # ── Multi-user session isolation ───────────────────────────────
 if ff.HAS_USERS:
@@ -132,13 +127,13 @@ def build_sidebar(t: dict) -> None:
     )
 
     pages: dict[str, str] = {
-        "🏠 Dashboard":      "dashboard",
-        "🧠 Intelligence":   "intelligence",
-        "📊 Analytics":      "analytics",
-        "✏️ Edit & Delete":  "edit",
+        "🏠 Dashboard":       "dashboard",
+        "🧠 Intelligence":    "intelligence",
+        "📊 Analytics":       "analytics",
+        "✏️ Edit & Delete":   "edit",
         "📤 Import / Export": "import_export",
-        "✈️ Trips":          "trips",
-        "⚙️ Settings":       "settings",
+        "✈️ Trips":           "trips",
+        "⚙️ Settings":        "settings",
     }
 
     if ff.HAS_BUDGET:           pages["🎯 Budgets"]           = "budgets"
@@ -178,8 +173,6 @@ if ff.HAS_NOTIFY and st.session_state.get("page") != "notifications":
 
 # ═══════════════════════════════════════════════════════════════
 # ROUTER
-# ctx bundles all page dependencies; page modules use **ctx
-# so they accept only what they need without reaching into globals.
 # ═══════════════════════════════════════════════════════════════
 
 page = st.session_state.get("page", "dashboard")
