@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
 from config import Columns
 from budget_manager import load_budgets, calculate_budget_status
+from ai_insights import _get_keys, _call_ai
 
 
 class BudgetAlert:
@@ -345,3 +346,221 @@ def get_enabled_alerts(df: pd.DataFrame, budgets: Dict) -> List[BudgetAlert]:
         alerts.extend(check_velocity_alerts(df))
     
     return alerts
+
+# ══════════════════════════════════════════════════════════════════════════
+# AI-POWERED ALERT FEATURES
+# ══════════════════════════════════════════════════════════════════════════
+
+def get_ai_alert_thresholds(df: pd.DataFrame, budgets: dict) -> dict:
+    """
+    Ask AI to recommend personalised alert thresholds per category
+    based on historical spending variance.
+
+    Instead of fixed 80/90/100% for everything, returns per-category
+    thresholds like:
+        {"Groceries": {"caution": 70, "warning": 85, "critical": 100},
+         "Dining Out": {"caution": 60, "warning": 80, "critical": 95}}
+
+    Result is cached in session_state for the month.
+    """
+    import json, re
+    import streamlit as st
+
+    cache_key = "ai_alert_thresholds"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    keys = _get_keys()
+    if not any(keys.values()) or df.empty or not budgets:
+        return {}
+
+    # Build variance summary per category
+    df2 = df.copy()
+    df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
+    df2[Columns.PRICE_PAID] = pd.to_numeric(df2[Columns.PRICE_PAID], errors="coerce").fillna(0)
+    df2["YM"] = df2[Columns.DATE].dt.to_period("M").astype(str)
+
+    cat_budgets = {k: v for k, v in budgets.items() if k != "__total_monthly__"}
+    if not cat_budgets:
+        return {}
+
+    variance_summary = {}
+    for cat, budget in cat_budgets.items():
+        monthly = df2[df2[Columns.CATEGORY] == cat].groupby("YM")[Columns.PRICE_PAID].sum()
+        if monthly.empty:
+            continue
+        avg = float(monthly.mean())
+        std = float(monthly.std()) if len(monthly) > 1 else 0.0
+        cv  = (std / avg * 100) if avg > 0 else 0   # coefficient of variation
+        variance_summary[cat] = {
+            "budget":     budget,
+            "avg_spend":  round(avg, 2),
+            "std_dev":    round(std, 2),
+            "variability_pct": round(cv, 1),
+            "months_data": int(len(monthly)),
+        }
+
+    if not variance_summary:
+        return {}
+
+    system = (
+        "You are a personal finance alert system configurator. "
+        "The user will provide spending history per category with variability metrics. "
+        "For each category, recommend three alert threshold percentages: caution, warning, critical. "
+        "High-variability categories (cv > 30%) should have looser thresholds. "
+        "Low-variability categories should have tighter thresholds. "
+        "critical must always be 95-105, warning between 75-95, caution between 55-80. "
+        "Return ONLY valid JSON: "
+        '{"CategoryName": {"caution": 70, "warning": 85, "critical": 100}, ...} '
+        "No markdown, no explanation."
+    )
+    user = (
+        f"Here is my spending variance by category:\n"
+        f"{json.dumps(variance_summary, indent=2)}\n\n"
+        "Recommend personalised alert thresholds for each category."
+    )
+
+    try:
+        raw, _ = _call_ai(system, user, keys)
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        thresholds = json.loads(cleaned)
+        if isinstance(thresholds, dict):
+            st.session_state[cache_key] = thresholds
+            return thresholds
+    except Exception:
+        pass
+
+    return {}
+
+
+def check_threshold_alerts_ai(df: pd.DataFrame, budgets: dict) -> list:
+    """
+    Like check_threshold_alerts() but uses AI-personalised thresholds
+    when available, falling back to fixed 80/90/100 otherwise.
+    """
+    ai_thresholds = get_ai_alert_thresholds(df, budgets)
+
+    alerts = []
+    from budget_manager import calculate_budget_status
+    statuses = calculate_budget_status(df, budgets, period="monthly")
+
+    for status in statuses:
+        if status["category"] == "Total":
+            continue
+        cat   = status["category"]
+        pct   = status["pct"]
+        spent = status["spent"]
+        budget = status["budget"]
+
+        # Use AI thresholds if available, else fall back to fixed values
+        t = ai_thresholds.get(cat, {"caution": 80, "warning": 90, "critical": 100})
+        t_critical = t.get("critical", 100)
+        t_warning  = t.get("warning",  90)
+        t_caution  = t.get("caution",  80)
+
+        source = "AI-personalised" if cat in ai_thresholds else "default"
+
+        if pct >= t_critical:
+            alerts.append(BudgetAlert(
+                category=cat, severity="critical",
+                message=(f"Budget exceeded: {cat} at {pct:.0f}% "
+                         f"({spent:,.0f} / {budget:,.0f} SEK) [{source} threshold: {t_critical}%]"),
+                data=status,
+            ))
+        elif pct >= t_warning:
+            remaining = budget - spent
+            alerts.append(BudgetAlert(
+                category=cat, severity="warning",
+                message=(f"Warning: {cat} at {pct:.0f}% "
+                         f"(only {remaining:,.0f} SEK left) [{source} threshold: {t_warning}%]"),
+                data=status,
+            ))
+        elif pct >= t_caution:
+            alerts.append(BudgetAlert(
+                category=cat, severity="caution",
+                message=(f"Caution: {cat} at {pct:.0f}% of budget "
+                         f"[{source} threshold: {t_caution}%]"),
+                data=status,
+            ))
+
+    return alerts
+
+
+def ai_alert_summary(df: pd.DataFrame, budgets: dict) -> None:
+    """
+    Render a concise AI-written summary of all active alerts.
+    Call this at the bottom of your alerts / notification UI.
+    """
+    import json
+    import streamlit as st
+
+    keys = _get_keys()
+    if not any(keys.values()):
+        return
+
+    all_alerts = get_all_alerts(df, budgets)
+    if not all_alerts:
+        return
+
+    cache_key = f"ai_alert_summary_{pd.Timestamp.now().strftime('%Y-%m-%d')}"
+    if cache_key not in st.session_state:
+        if not st.button("🤖 Get AI Alert Analysis", key="ai_alert_btn"):
+            return
+
+        alert_list = [
+            {"category": a.category, "severity": a.severity, "message": a.message}
+            for a in all_alerts
+        ]
+        system = (
+            "You are a concise personal finance assistant. "
+            "The user has several budget alerts. Summarise them in 3-4 plain-English bullet points. "
+            "Identify the most urgent issue, explain what it means in practical terms, "
+            "and give one concrete action for each. Be direct, no fluff. "
+            "Use bullet points starting with •."
+        )
+        user = (
+            f"Here are my current budget alerts:\n"
+            f"{json.dumps(alert_list, indent=2)}\n\n"
+            "Give me a plain-English summary with priority actions."
+        )
+        with st.spinner("AI is summarising your alerts…"):
+            text, provider = _call_ai(system, user, keys)
+
+        if text:
+            st.session_state[cache_key] = (text, provider)
+        else:
+            st.error("No AI response. Check your API key in secrets.toml.")
+            return
+
+    if cache_key not in st.session_state:
+        return
+
+    text, provider = st.session_state[cache_key]
+    t_bg, t_border, t_fg, t_muted = "#fff", "#e2e8f0", "#0f172a", "#64748b"
+    try:
+        from budget_manager import _t
+        tc = _t()
+        t_bg, t_border, t_fg, t_muted = tc["card"], tc["border"], tc["fg"], tc["muted"]
+    except Exception:
+        pass
+
+    bullets = [b.strip().lstrip("•").strip() for b in text.split("\n") if b.strip()]
+    bullets = [b for b in bullets if len(b) > 10]
+    items_html = "".join(
+        f"<li style='margin-bottom:0.4rem;color:{t_fg};'>{b}</li>"
+        for b in bullets
+    ) or f"<li style='color:{t_fg};'>{text}</li>"
+
+    st.markdown(
+        f"<div style='background:{t_bg};border:1px solid {t_border};"
+        f"border-left:4px solid #ef4444;border-radius:12px;"
+        f"padding:1rem 1.3rem;margin-top:0.75rem;'>"
+        f"<div style='font-weight:700;color:{t_fg};margin-bottom:0.5rem;'>🤖 AI Alert Analysis</div>"
+        f"<ul style='margin:0;padding-left:1.2rem;font-size:0.9rem;line-height:1.7;'>{items_html}</ul>"
+        f"<div style='margin-top:0.5rem;font-size:0.7rem;color:{t_muted};'>Generated by {provider}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("🔄 Refresh analysis", key="refresh_alert_ai"):
+        st.session_state.pop(cache_key, None)
+        st.rerun()

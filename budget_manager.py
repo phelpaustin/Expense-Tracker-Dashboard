@@ -11,6 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Dict, List
 from config import Columns
+from ai_insights import _get_keys, _call_ai
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -430,6 +431,9 @@ def budget_setup_ui(df: pd.DataFrame):
 
     st.markdown("---")
 
+    # ── AI Budget Suggestions ────────────────────────────────────────────
+    _ai_budget_suggestions(df)
+
     # ── SECTION 2: Category Budgets (optional) ────────────────────────────
     st.markdown("#### 📂 Section 2 — Category Budgets *(Optional)*")
     st.caption("Optionally set per-category limits on top of your total budget for more detailed tracking.")
@@ -526,3 +530,154 @@ def budget_setup_ui(df: pd.DataFrame):
                     st.error("Invalid JSON format")
             except Exception as e:
                 st.error(f"Import failed: {e}")
+
+# ══════════════════════════════════════════════════════════════════════════
+# AI BUDGET SUGGESTIONS
+# ══════════════════════════════════════════════════════════════════════════
+
+def _ai_budget_suggestions(df: pd.DataFrame) -> None:
+    """
+    Analyse the last 3 months of spending per category and ask AI
+    to recommend realistic monthly budget amounts.
+    Shown inside budget_setup_ui() between the total budget and category sections.
+    """
+    import json
+    t = _t()
+
+    keys = _get_keys()
+    if not any(keys.values()):
+        return   # silently skip if no AI key — setup page still works fine
+
+    st.markdown("---")
+    st.markdown("#### 🤖 AI Budget Suggestions")
+    st.caption("Based on your last 3 months of actual spending, the AI recommends per-category budgets.")
+
+    cache_key = "ai_budget_suggestions"
+
+    if cache_key not in st.session_state:
+        if not st.button("✨ Generate AI Budget Suggestions", key="ai_budget_btn"):
+            return
+
+        if df.empty:
+            st.info("No expense data found. Add some expenses first.")
+            return
+
+        # Build a 3-month category summary
+        df2 = df.copy()
+        df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
+        df2[Columns.PRICE_PAID] = pd.to_numeric(df2[Columns.PRICE_PAID], errors="coerce").fillna(0)
+        df2["YM"] = df2[Columns.DATE].dt.to_period("M").astype(str)
+
+        recent_3 = sorted(df2["YM"].unique())[-3:]
+        df3 = df2[df2["YM"].isin(recent_3)]
+
+        monthly_by_cat = (
+            df3.groupby(["YM", Columns.CATEGORY])[Columns.PRICE_PAID]
+            .sum().unstack(fill_value=0)
+        )
+
+        summary = {}
+        for cat in monthly_by_cat.columns:
+            vals = monthly_by_cat[cat].tolist()
+            summary[cat] = {
+                "monthly_values":  [round(v, 2) for v in vals],
+                "average":         round(sum(vals) / len(vals), 2),
+                "max":             round(max(vals), 2),
+                "min":             round(min(vals), 2),
+            }
+
+        current_budgets = _category_budgets_only(load_budgets())
+
+        system = (
+            "You are a personal finance advisor. "
+            "The user will give you their last 3 months of spending per category. "
+            "Suggest a realistic monthly budget for each category. "
+            "Budgets should be slightly above the average to be achievable, "
+            "but tight enough to encourage discipline. "
+            "Round to the nearest 50 SEK. "
+            "Return ONLY a JSON object mapping category name to budget amount (integer). "
+            "No markdown, no explanation, just the JSON."
+        )
+        user = (
+            f"Here is my last 3 months of spending by category (SEK):\n"
+            f"{json.dumps(summary, indent=2)}\n\n"
+            f"Currently set budgets: {json.dumps(current_budgets)}\n\n"
+            "Suggest a monthly budget for each category as a JSON object."
+        )
+
+        with st.spinner("AI is analysing your spending patterns…"):
+            raw, provider = _call_ai(system, user, keys)
+
+        # Parse the JSON response
+        import re
+        try:
+            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+            suggestions = json.loads(cleaned)
+            if not isinstance(suggestions, dict):
+                raise ValueError("not a dict")
+            st.session_state[cache_key] = (suggestions, provider, summary)
+        except Exception as e:
+            st.error(f"AI returned unexpected format: {e}\n\nRaw: {raw[:300]}")
+            return
+
+    if cache_key not in st.session_state:
+        return
+
+    suggestions, provider, summary = st.session_state[cache_key]
+
+    # Render suggestion cards
+    st.markdown(
+        f"<div style='font-size:0.75rem;color:{t["muted"]};margin-bottom:0.75rem;'>"
+        f"Suggestions from {provider} · based on your last 3 months</div>",
+        unsafe_allow_html=True,
+    )
+
+    current_budgets = _category_budgets_only(load_budgets())
+    cats = sorted(suggestions.keys())
+    cols = st.columns(3)
+
+    for i, cat in enumerate(cats):
+        suggested = suggestions[cat]
+        hist = summary.get(cat, {})
+        avg  = hist.get("average", 0)
+        with cols[i % 3]:
+            diff     = suggested - current_budgets.get(cat, 0)
+            diff_str = (f"+{diff:,.0f}" if diff > 0 else f"{diff:,.0f}") if cat in current_budgets else "new"
+            diff_col = "#22c55e" if diff >= 0 else "#ef4444"
+            st.markdown(
+                f"<div style='background:{t["card"]};border:1px solid {t["border"]};"
+                f"border-radius:10px;padding:0.8rem 1rem;margin-bottom:0.5rem;'>"
+                f"<div style='font-size:0.78rem;color:{t["muted"]};'>{cat}</div>"
+                f"<div style='font-size:1.3rem;font-weight:700;color:{t["fg"]};'>"
+                f"{suggested:,.0f} SEK</div>"
+                f"<div style='font-size:0.72rem;color:{t["muted"]};'>"
+                f"avg {avg:,.0f} · "
+                f"<span style='color:{diff_col};'>{diff_str} vs current</span></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button(f"Apply {cat}", key=f"apply_ai_{cat}", use_container_width=True):
+                budgets = load_budgets()
+                budgets[cat] = suggested
+                save_budgets(budgets)
+                st.success(f"✅ {cat} budget set to {suggested:,.0f} SEK")
+                st.rerun()
+
+    # Apply all button
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_all, col_clear = st.columns([2, 1])
+    with col_all:
+        if st.button("⚡ Apply ALL suggestions", type="primary", use_container_width=True, key="apply_all_ai"):
+            budgets = load_budgets()
+            for cat, amt in suggestions.items():
+                budgets[cat] = amt
+            save_budgets(budgets)
+            st.session_state.pop(cache_key, None)
+            st.success(f"✅ Applied {len(suggestions)} AI budget suggestions!")
+            st.rerun()
+    with col_clear:
+        if st.button("🔄 Regenerate", use_container_width=True, key="regen_ai_budget"):
+            st.session_state.pop(cache_key, None)
+            st.rerun()
+
+    st.markdown("---")

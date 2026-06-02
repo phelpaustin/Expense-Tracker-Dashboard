@@ -438,3 +438,15 @@ def notification_settings_ui(df: pd.DataFrame):
                 )
         else:
             st.error("❌ Could not save settings. Check write permissions on the data/ folder.")
+
+    # ── AI Alert Summary ─────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🤖 AI Alert Analysis")
+    st.caption("Let AI summarise your active alerts and suggest priority actions.")
+    try:
+        from alerts_engine import ai_alert_summary
+        from budget_manager import load_budgets
+        budgets = load_budgets()
+        ai_alert_summary(df, budgets)
+    except ImportError:
+        st.info("AI alert analysis requires alerts_engine.py to be up to date.")
