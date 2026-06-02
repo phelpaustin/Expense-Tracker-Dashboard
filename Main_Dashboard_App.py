@@ -22,6 +22,7 @@ from analytics import what_if_simulation
 from settings_page import render_settings_page
 from theme import THEMES, DEFAULT_THEME, get_theme, apply_theme
 import feature_flags as ff
+from ai_insights import ai_chat_ui
 
 # ── Page modules ──────────────────────────────────────────────
 from views import page_dashboard, page_intelligence, page_analytics, page_edit, page_import_export, page_trips
@@ -202,6 +203,8 @@ elif page == "price_tracker" and ff.HAS_PRICE_TRACKER:
     ff.price_tracker_ui(df)
 elif page == "financial_metrics" and ff.HAS_FINANCIAL_METRICS:
     ff.financial_metrics_ui(df)
+elif page == "ai_insights":
+    ai_chat_ui(df)
 elif page == "receipt" and ff.HAS_OCR:
     ff.receipt_upload_ui_with_translation(df, save_data, sheet)
 elif page == "tax" and ff.HAS_TAX:
