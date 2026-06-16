@@ -261,8 +261,8 @@ def get_all_alerts(df: pd.DataFrame, budgets: Dict) -> List[BudgetAlert]:
     """
     alerts = []
     
-    # Collect all alert types
-    alerts.extend(check_threshold_alerts(df, budgets))
+    # Collect all alert types — use AI-personalised thresholds when available
+    alerts.extend(check_threshold_alerts_ai(df, budgets))
     alerts.extend(check_predictive_alerts(df, budgets))
     alerts.extend(check_velocity_alerts(df))
     
