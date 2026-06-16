@@ -146,27 +146,66 @@ def _call_ai(system: str, user: str, keys: Dict[str, str]) -> Tuple[str, str]:
 
 
 def _gemini(system: str, user: str, api_key: str) -> str:
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash-latest"]
+    import time
+
+    models  = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash-latest"]
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"parts": [{"text": user}]}],
-        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.4},
+        "contents":           [{"parts": [{"text": user}]}],
+        "generationConfig":   {"maxOutputTokens": 2048, "temperature": 0.4},
     }
     for model in models:
-        url = (
+        url  = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={api_key}"
         )
         resp = requests.post(url, json=payload, timeout=60)
-        if resp.status_code != 200:
-            st.error(f"Status: {resp.status_code}")
-            st.code(resp.text)
-            resp.raise_for_status()
+
         if resp.status_code == 404:
-            continue
+            continue  # model not available, try next
+
+        if resp.status_code == 429:
+            try:
+                err       = resp.json().get("error", {})
+                quota_ids = [
+                    v.get("quotaId", "")
+                    for d in err.get("details", [])
+                    for v in d.get("violations", [])
+                ]
+                if any("PerDay" in qid for qid in quota_ids):
+                    raise RuntimeError(
+                        "Gemini free-tier daily quota exhausted.\n\n"
+                        "Options:\n"
+                        "1. Wait until midnight Pacific time for the quota to reset.\n"
+                        "2. Generate a new API key at https://aistudio.google.com/app/apikey "
+                        "(must start with AIza).\n"
+                        "3. Add a Claude or OpenAI key to secrets.toml as a backup."
+                    )
+                retry_after = 30
+                for d in err.get("details", []):
+                    delay = d.get("retryDelay", "")
+                    if delay:
+                        try:
+                            retry_after = int(delay.replace("s", "").strip()) + 2
+                        except ValueError:
+                            pass
+                        break
+                time.sleep(min(retry_after, 35))
+                resp = requests.post(url, json=payload, timeout=60)
+                if resp.status_code == 429:
+                    continue  # still rate-limited, try next model
+            except RuntimeError:
+                raise
+            except Exception:
+                continue
+
         resp.raise_for_status()
         return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    raise RuntimeError("No Gemini model available")
+
+    raise RuntimeError(
+        "No Gemini model responded. Check your API key at "
+        "https://aistudio.google.com/app/apikey — it must start with AIza."
+    )
 
 
 def _claude(system: str, user: str, api_key: str) -> str:

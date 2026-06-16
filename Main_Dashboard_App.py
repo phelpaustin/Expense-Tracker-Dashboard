@@ -1,4 +1,4 @@
-# Main_Dashboard_App.py ── REFACTORED
+# Main_Dashboard_App.py
 # ─────────────────────────────────────────────────────────────
 # Responsibilities (only):
 # 1. Streamlit page config
