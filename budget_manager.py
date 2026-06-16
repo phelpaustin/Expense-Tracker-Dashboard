@@ -626,8 +626,9 @@ def _ai_budget_suggestions(df: pd.DataFrame) -> None:
     suggestions, provider, summary = st.session_state[cache_key]
 
     # Render suggestion cards
+    muted_c = t["muted"]
     st.markdown(
-        f"<div style='font-size:0.75rem;color:{t["muted"]};margin-bottom:0.75rem;'>"
+        f"<div style='font-size:0.75rem;color:{muted_c};margin-bottom:0.75rem;'>"
         f"Suggestions from {provider} · based on your last 3 months</div>",
         unsafe_allow_html=True,
     )
@@ -644,13 +645,17 @@ def _ai_budget_suggestions(df: pd.DataFrame) -> None:
             diff     = suggested - current_budgets.get(cat, 0)
             diff_str = (f"+{diff:,.0f}" if diff > 0 else f"{diff:,.0f}") if cat in current_budgets else "new"
             diff_col = "#22c55e" if diff >= 0 else "#ef4444"
+            card_bg = t["card"]
+            card_border = t["border"]
+            card_fg = t["fg"]
+            card_muted = t["muted"]
             st.markdown(
-                f"<div style='background:{t["card"]};border:1px solid {t["border"]};"
+                f"<div style='background:{card_bg};border:1px solid {card_border};"
                 f"border-radius:10px;padding:0.8rem 1rem;margin-bottom:0.5rem;'>"
-                f"<div style='font-size:0.78rem;color:{t["muted"]};'>{cat}</div>"
-                f"<div style='font-size:1.3rem;font-weight:700;color:{t["fg"]};'>"
+                f"<div style='font-size:0.78rem;color:{card_muted};'>{cat}</div>"
+                f"<div style='font-size:1.3rem;font-weight:700;color:{card_fg};'>" 
                 f"{suggested:,.0f} SEK</div>"
-                f"<div style='font-size:0.72rem;color:{t["muted"]};'>"
+                f"<div style='font-size:0.72rem;color:{card_muted};'>" 
                 f"avg {avg:,.0f} · "
                 f"<span style='color:{diff_col};'>{diff_str} vs current</span></div>"
                 f"</div>",
