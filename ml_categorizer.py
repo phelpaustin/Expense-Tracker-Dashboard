@@ -13,6 +13,8 @@ from config import Columns
 
 
 RULES_FILE = "data/categorization_rules.json"
+from json_store import JsonStore
+_RULES_STORE = JsonStore(RULES_FILE, default={}, sync=False)
 
 
 # ============================================================
@@ -74,18 +76,11 @@ DEFAULT_RULES = {
 # RULE MANAGEMENT
 # ============================================================
 def load_custom_rules() -> dict:
-    path = Path(RULES_FILE)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return {}
-    return {}
+    return _RULES_STORE.load()
 
 
 def save_custom_rules(rules: dict):
-    Path(RULES_FILE).parent.mkdir(parents=True, exist_ok=True)
-    Path(RULES_FILE).write_text(json.dumps(rules, indent=2))
+    _RULES_STORE.save(rules)
 
 
 def get_all_rules() -> dict:
@@ -221,13 +216,22 @@ def auto_categorize_dataframe(df: pd.DataFrame, overwrite_existing: bool = False
     """Auto-categorize rows with missing or empty categories."""
     df2 = df.copy()
     changed = 0
-    for idx, row in df2.iterrows():
-        if not overwrite_existing and pd.notna(row.get(Columns.CATEGORY)) and str(row.get(Columns.CATEGORY, "")).strip():
-            continue
+
+    # Vectorised pre-filter: only rows that actually need a category are
+    # visited, instead of iterating (and calling the model for) every row.
+    if overwrite_existing or Columns.CATEGORY not in df2.columns:
+        needs = pd.Series(True, index=df2.index)
+    else:
+        cat = df2[Columns.CATEGORY]
+        needs = cat.isna() | (cat.astype(str).str.strip() == "")
+
+    has_item = Columns.ITEM in df2.columns
+    has_shop = Columns.SHOP in df2.columns
+    for idx in df2.index[needs]:
         suggestion = get_suggestion(
-            str(row.get(Columns.ITEM, "")),
-            str(row.get(Columns.SHOP, "")),
-            df
+            str(df2.at[idx, Columns.ITEM]) if has_item else "",
+            str(df2.at[idx, Columns.SHOP]) if has_shop else "",
+            df,
         )
         if suggestion["category"]:
             df2.at[idx, Columns.CATEGORY] = suggestion["category"]

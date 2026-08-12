@@ -19,8 +19,11 @@ from plotly.subplots import make_subplots
 import streamlit as st
 from datetime import date, datetime
 from typing import Optional
-from ai_insights import ai_monthly_report
+# ai_monthly_report is imported lazily inside budget_intelligence() so an
+# import error in ai_insights (e.g. missing optional deps) does not take down
+# the whole Intelligence page.
 from config import Columns
+from security_utils import escape_html as esc
 
 # ── Shared colour palette ─────────────────────────────────────────────────────
 PALETTE = ["#6366f1", "#22d3ee", "#f59e0b", "#22c55e",
@@ -30,20 +33,8 @@ WARNING = "#f59e0b"
 OK      = "#22c55e"
 INFO    = "#6366f1"
 
-_THEME_PALETTES = {
-    "☀️ Light":    {"paper":"#ffffff","grid":"#e2e8f0","text":"#475569","muted":"#94a3b8","fg":"#0f172a","border":"#e2e8f0","accent":"#6366f1","card":"#ffffff","bg":"#f8fafc"},
-    "🌑 Dark":     {"paper":"#1e293b","grid":"#334155","text":"#94a3b8","muted":"#64748b","fg":"#f1f5f9","border":"#334155","accent":"#818cf8","card":"#1e293b","bg":"#0f172a"},
-    "🌊 Ocean":    {"paper":"#f0f9ff","grid":"#bae6fd","text":"#0369a1","muted":"#38bdf8","fg":"#0c4a6e","border":"#bae6fd","accent":"#0284c7","card":"#ffffff","bg":"#f0f9ff"},
-    "🌿 Forest":   {"paper":"#f0fdf4","grid":"#bbf7d0","text":"#15803d","muted":"#4ade80","fg":"#14532d","border":"#bbf7d0","accent":"#16a34a","card":"#ffffff","bg":"#f0fdf4"},
-    "🌅 Sunset":   {"paper":"#fff7ed","grid":"#fed7aa","text":"#c2410c","muted":"#fb923c","fg":"#7c2d12","border":"#fed7aa","accent":"#ea580c","card":"#ffffff","bg":"#fff7ed"},
-    "🌙 Midnight": {"paper":"#13131f","grid":"#1e1e3f","text":"#a5b4fc","muted":"#4f4f7a","fg":"#e2e2ff","border":"#1e1e3f","accent":"#7c3aed","card":"#13131f","bg":"#0d0d1a"},
-    "🌸 Rose":     {"paper":"#fff1f2","grid":"#fecdd3","text":"#be123c","muted":"#fb7185","fg":"#881337","border":"#fecdd3","accent":"#e11d48","card":"#ffffff","bg":"#fff1f2"},
-    "⬜ Slate":    {"paper":"#ffffff","grid":"#e2e8f0","text":"#475569","muted":"#94a3b8","fg":"#1e293b","border":"#cbd5e1","accent":"#64748b","card":"#ffffff","bg":"#f8fafc"},
-}
-
-def _t() -> dict:
-    name = st.session_state.get("theme_name", "☀️ Light")
-    return _THEME_PALETTES.get(name, _THEME_PALETTES["☀️ Light"])
+# Theme lookup — single source of truth lives in theme.py
+from theme import get_chart_theme as _t
 
 def _fmt(fig: go.Figure, height: int = 360) -> go.Figure:
     t = _t()
@@ -69,14 +60,12 @@ def _card(html: str):
     )
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def _prepare(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    df2 = df.copy()
-    df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
-    df2 = df2.dropna(subset=[Columns.DATE])
-    df2[Columns.PRICE_PAID] = pd.to_numeric(df2[Columns.PRICE_PAID], errors="coerce").fillna(0)
-    df2["YM"]      = df2[Columns.DATE].dt.to_period("M").astype(str)
+    from utils import prepare_expense_df
+    df2 = prepare_expense_df(df, numeric_price=True)
     df2["Year"]    = df2[Columns.DATE].dt.year
     df2["Month"]   = df2[Columns.DATE].dt.month
     df2["DayName"] = df2[Columns.DATE].dt.day_name()
@@ -134,7 +123,7 @@ def _category_hotspot(df2: pd.DataFrame, t: dict):
     agg["Share%"] = (agg["Total"] / total_all * 100).round(1)
 
     # Monthly trend per category
-    monthly_cat = (df2.groupby(["YM", Columns.CATEGORY])[Columns.PRICE_PAID]
+    monthly_cat = (df2.groupby([Columns.YEAR_MONTH, Columns.CATEGORY])[Columns.PRICE_PAID]
                    .sum().reset_index())
 
     col_left, col_right = st.columns([1.2, 1])
@@ -167,7 +156,7 @@ def _category_hotspot(df2: pd.DataFrame, t: dict):
             st.markdown(
                 f"""<div style='margin-bottom:0.5rem;'>
                     <div style='display:flex;justify-content:space-between;font-size:0.85rem;color:{t["fg"]};'>
-                        <span><b>{row[Columns.CATEGORY]}</b></span>
+                        <span><b>{esc(row[Columns.CATEGORY])}</b></span>
                         <span>{row["Total"]:,.0f} SEK &nbsp;·&nbsp; <span style='color:{t["muted"]}'>{pct:.1f}%</span></span>
                     </div>
                     <div style='background:{t["border"]};border-radius:4px;height:6px;margin-top:4px;'>
@@ -182,14 +171,14 @@ def _category_hotspot(df2: pd.DataFrame, t: dict):
     st.markdown(f"<b style='color:{t['fg']}'>Category spending over time</b>", unsafe_allow_html=True)
     top_cats = agg.head(6)[Columns.CATEGORY].tolist()
     pivot = (monthly_cat[monthly_cat[Columns.CATEGORY].isin(top_cats)]
-             .pivot_table(index="YM", columns=Columns.CATEGORY, values=Columns.PRICE_PAID, aggfunc="sum")
-             .fillna(0).reset_index().sort_values("YM"))
+             .pivot_table(index=Columns.YEAR_MONTH, columns=Columns.CATEGORY, values=Columns.PRICE_PAID, aggfunc="sum")
+             .fillna(0).reset_index().sort_values(Columns.YEAR_MONTH))
 
     fig2 = go.Figure()
     for i, cat in enumerate(top_cats):
         if cat in pivot.columns:
             fig2.add_trace(go.Scatter(
-                x=pivot["YM"], y=pivot[cat], name=cat, mode="lines+markers",
+                x=pivot[Columns.YEAR_MONTH], y=pivot[cat], name=cat, mode="lines+markers",
                 line=dict(color=PALETTE[i % len(PALETTE)], width=2),
                 marker=dict(size=4),
                 hovertemplate=f"<b>{cat}</b><br>%{{x}}<br>%{{y:,.0f}} SEK<extra></extra>",
@@ -403,9 +392,9 @@ def budget_intelligence(df: pd.DataFrame):
     day_of_month  = now.day
     days_left     = days_in_month - day_of_month
 
-    this_month = df2[df2["YM"] == current_ym]
+    this_month = df2[df2[Columns.YEAR_MONTH] == current_ym]
     last_month_ym = (now - pd.DateOffset(months=1)).to_period("M").strftime("%Y-%m")
-    last_month = df2[df2["YM"] == last_month_ym]
+    last_month = df2[df2[Columns.YEAR_MONTH] == last_month_ym]
 
     # ── Velocity cards ────────────────────────────────────────────────────────
     st.markdown("#### ⚡ Spending Velocity (This Month)")
@@ -418,7 +407,7 @@ def budget_intelligence(df: pd.DataFrame):
     last_daily = total_last_month / days_in_month if days_in_month > 0 else 0
 
     # 3-month average for comparison
-    months_hist = (df2.groupby("YM")[Columns.PRICE_PAID].sum()
+    months_hist = (df2.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID].sum()
                    .sort_index().tail(4).head(3))
     avg_3mo = months_hist.mean() if not months_hist.empty else 0
 
@@ -472,6 +461,10 @@ def budget_intelligence(df: pd.DataFrame):
     # ── Category budget health ─────────────────────────────────────────────────
     st.markdown("#### 📊 Category Budget Health")
     _category_budget_health(df2, this_month, last_month, t)
+    try:
+        from ai_insights import ai_monthly_report
+    except ImportError:
+        return
     ai_monthly_report(df)
 
 
@@ -498,18 +491,19 @@ def _generate_recommendations(df2, this_month, last_month, avg_3mo, projected, t
             if cat in cat_last.index and cat_last[cat] > 0:
                 pct_change = (cat_this[cat] - cat_last[cat]) / cat_last[cat] * 100
                 if pct_change > 50 and cat_this[cat] > 500:
+                    cat_e = esc(cat)
                     recs.append(f"""
                         <span style='font-size:1.1rem;'>📈</span>
-                        <b style='color:{WARNING}'>{cat} Spike Detected</b><br>
+                        <b style='color:{WARNING}'>{cat_e} Spike Detected</b><br>
                         <span style='color:{t["text"]};font-size:0.9rem;'>
-                            Your <b>{cat}</b> spending jumped <b>+{pct_change:.0f}%</b> vs last month
+                            Your <b>{cat_e}</b> spending jumped <b>+{pct_change:.0f}%</b> vs last month
                             ({cat_this[cat]:,.0f} vs {cat_last[cat]:,.0f} SEK).
-                            Review recent {cat.lower()} purchases.
+                            Review recent {esc(cat.lower())} purchases.
                         </span>
                     """)
 
     if not df2.empty:
-        monthly = df2.groupby("YM")[Columns.PRICE_PAID].sum().sort_index()
+        monthly = df2.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID].sum().sort_index()
         if len(monthly) >= 3:
             trend = np.polyfit(range(len(monthly)), monthly.values, 1)[0]
             if trend > 200:
@@ -531,7 +525,7 @@ def _generate_recommendations(df2, this_month, last_month, avg_3mo, projected, t
                 <span style='font-size:1.1rem;'>🏪</span>
                 <b style='color:{acc}'>Top Shop This Month</b><br>
                 <span style='color:{t["text"]};font-size:0.9rem;'>
-                    <b>{top_shop}</b> is your biggest expense source this month at <b>{top_amt:,.0f} SEK</b>.
+                    <b>{esc(top_shop)}</b> is your biggest expense source this month at <b>{top_amt:,.0f} SEK</b>.
                     Consider whether all purchases there are necessary.
                 </span>
             """)
@@ -581,7 +575,7 @@ def _category_budget_health(df2, this_month, last_month, t):
         st.markdown(
             f"""<div style='margin-bottom:0.6rem;'>
                 <div style='display:flex;justify-content:space-between;font-size:0.87rem;color:{t["fg"]};'>
-                    <span><b>{row["Category"]}</b>{chg_html}</span>
+                    <span><b>{esc(row["Category"])}</b>{chg_html}</span>
                     <span style='color:{t["muted"]};'>{row["This Month"]:,.0f} SEK</span>
                 </div>
                 <div style='background:{t["border"]};border-radius:4px;height:8px;margin-top:5px;'>
@@ -610,15 +604,15 @@ def savings_opportunities(df: pd.DataFrame):
     t   = _t()
 
     # Find fastest growing categories vs 3-month baseline
-    monthly_cat = (df2.groupby(["YM", Columns.CATEGORY])[Columns.PRICE_PAID]
-                   .sum().reset_index().sort_values("YM"))
-    recent_yms  = sorted(df2["YM"].unique())
+    monthly_cat = (df2.groupby([Columns.YEAR_MONTH, Columns.CATEGORY])[Columns.PRICE_PAID]
+                   .sum().reset_index().sort_values(Columns.YEAR_MONTH))
+    recent_yms  = sorted(df2[Columns.YEAR_MONTH].unique())
     last3 = recent_yms[-4:-1] if len(recent_yms) >= 4 else recent_yms[:-1]
     curr  = recent_yms[-1]
 
-    baseline = (monthly_cat[monthly_cat["YM"].isin(last3)]
+    baseline = (monthly_cat[monthly_cat[Columns.YEAR_MONTH].isin(last3)]
                 .groupby(Columns.CATEGORY)[Columns.PRICE_PAID].mean())
-    current  = (monthly_cat[monthly_cat["YM"] == curr]
+    current  = (monthly_cat[monthly_cat[Columns.YEAR_MONTH] == curr]
                 .groupby(Columns.CATEGORY)[Columns.PRICE_PAID].sum())
 
     opp = []
@@ -659,7 +653,7 @@ def savings_opportunities(df: pd.DataFrame):
             _card(f"""
                 <div style='display:flex;justify-content:space-between;align-items:center;'>
                     <div>
-                        <b style='color:{t["fg"]};font-size:0.95rem;'>{row["Category"]}</b>
+                        <b style='color:{t["fg"]};font-size:0.95rem;'>{esc(row["Category"])}</b>
                         <span style='color:{DANGER};font-size:0.82rem;margin-left:0.4rem;'>
                             ↑ {row["Excess%"]:.0f}% above average
                         </span><br>
@@ -767,14 +761,11 @@ def _ai_savings_advice(opp_df: pd.DataFrame, curr_month: str, t: dict):
 
     text, provider = st.session_state[cache_key]
     bg, border, fg, muted = t["card"], t["border"], t["fg"], t["muted"]
-    st.markdown(
-        f"<div style='background:{bg};border:1px solid {border};"
-        f"border-left:4px solid #6366f1;border-radius:12px;"
-        f"padding:1rem 1.3rem;font-size:0.9rem;color:{fg};line-height:1.7;'>"
-        + text.replace("\n", "<br>") +
-        f"<div style='margin-top:0.6rem;font-size:0.72rem;color:{muted};'>"  
-        f"Generated by {provider}</div></div>",
-        unsafe_allow_html=True,
+    from page_helpers import render_ai_card
+    render_ai_card(
+        text.replace("\n", "<br>"), provider,
+        cache_key=cache_key, refresh_key="refresh_savings_ai",
+        bg=bg, border=border, fg=fg, muted=muted, with_refresh=False,
     )
     col1, _ = st.columns([1, 5])
     with col1:
@@ -799,12 +790,12 @@ def smart_kpi_row(df: pd.DataFrame):
     curr_ym  = now.to_period("M").strftime("%Y-%m")
     prev_ym  = (now - pd.DateOffset(months=1)).to_period("M").strftime("%Y-%m")
 
-    this_mo  = df2[df2["YM"] == curr_ym][Columns.PRICE_PAID].sum()
-    prev_mo  = df2[df2["YM"] == prev_ym][Columns.PRICE_PAID].sum()
+    this_mo  = df2[df2[Columns.YEAR_MONTH] == curr_ym][Columns.PRICE_PAID].sum()
+    prev_mo  = df2[df2[Columns.YEAR_MONTH] == prev_ym][Columns.PRICE_PAID].sum()
     total    = df2[Columns.PRICE_PAID].sum()
-    avg_mo   = df2.groupby("YM")[Columns.PRICE_PAID].sum().mean()
+    avg_mo   = df2.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID].sum().mean()
     n_cats   = df2[Columns.CATEGORY].nunique() if Columns.CATEGORY in df2.columns else 0
-    n_txns   = len(df2[df2["YM"] == curr_ym])
+    n_txns   = len(df2[df2[Columns.YEAR_MONTH] == curr_ym])
 
     mom_pct  = ((this_mo - prev_mo) / prev_mo * 100) if prev_mo else None
     mom_clr  = DANGER if (mom_pct or 0) > 10 else (WARNING if (mom_pct or 0) > 0 else OK)

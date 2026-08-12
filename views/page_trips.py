@@ -19,7 +19,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from datetime import date, timedelta
 
-from page_helpers import hero, style_fig
+from config import SUPPORTED_CURRENCIES, CURRENCY_SYMBOLS, CURRENCY_SYMBOL_PREFIX
+from page_helpers import hero, style_fig, empty_state
 from trips_manager import (
     TRIP_CATEGORIES,
     TRIP_STATUSES,
@@ -123,12 +124,12 @@ _CAT_ICON = {
 
 
 def _currency_symbol(c: str) -> str:
-    return {"SEK": "kr", "USD": "$", "EUR": "€", "INR": "₹"}.get(c, c)
+    return CURRENCY_SYMBOLS.get(c, c)
 
 
 def _fmt(amount: float, currency: str) -> str:
     sym = _currency_symbol(currency)
-    if currency in ("USD", "INR"):
+    if currency in CURRENCY_SYMBOL_PREFIX:
         return f"{sym}{amount:,.2f}"
     return f"{amount:,.2f} {sym}"
 
@@ -172,7 +173,7 @@ def _render_trip_list(t: dict) -> None:
         st.markdown("---")
 
     if not trips:
-        st.info("No trips yet — click **＋ New Trip** to get started.")
+        empty_state("No trips yet — click ＋ New Trip to get started.")
         return
 
     # ── Trip cards grid ────────────────────────────────────────
@@ -311,10 +312,11 @@ def _render_trip_form(t: dict) -> None:
                 value=_parse_date(existing["end_date"]) if existing else date.today() + timedelta(days=7),
                 key="tf_end",
             )
+            _cur_default = existing.get("currency", "SEK") if existing else "SEK"
             currency = st.selectbox(
                 "Base Currency",
-                ["SEK", "USD", "EUR", "INR"],
-                index=["SEK", "USD", "EUR", "INR"].index(existing.get("currency", "SEK")) if existing else 0,
+                SUPPORTED_CURRENCIES,
+                index=SUPPORTED_CURRENCIES.index(_cur_default) if _cur_default in SUPPORTED_CURRENCIES else 0,
                 key="tf_currency",
             )
 

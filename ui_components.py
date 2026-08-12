@@ -6,6 +6,8 @@ from utils import calculate_price_per_unit, load_dropdown_options, save_dropdown
 from config import SUPPORTED_CURRENCIES, DEFAULT_CURRENCY, Columns
 from data_manager import bump_data_version
 from validators import ExpenseValidator, ValidationError
+from models import ExpenseItem
+from pydantic import ValidationError as PydanticValidationError
 
 
 # ── Helper: inline "Add new option" widget ───────────────────────────────────
@@ -68,38 +70,12 @@ def _do_save(new_rows: list, df: pd.DataFrame, save_fn) -> None:
     n = len(new_rows)
     updated = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
     save_fn(updated)
-    st.success(f"✅ Added {n} expense entr{'y' if n == 1 else 'ies'} successfully!")
+    st.toast(f"Added {n} expense entr{'y' if n == 1 else 'ies'}", icon="✅")
     # Store for quick-edit panel
     st.session_state["_last_saved_batch"] = new_rows
     st.session_state["_last_saved_count"] = n
     st.session_state["multi_items"].clear()
     bump_data_version()
-
-
-# ====================================================
-# 🌗 THEME CSS
-# ====================================================
-def theme_css(dark: bool):
-    """Inject CSS for light/dark themes and KPI styling."""
-    if dark:
-        primary_bg = "#0b1220"
-        secondary_bg = "#0f1724"
-        text = "#e6eef6"
-    else:
-        primary_bg = "#f7fafc"
-        secondary_bg = "#ffffff"
-        text = "#0f1724"
-
-    css = f"""
-    <style>
-    .stApp {{ background: {primary_bg}; color: {text}; }}
-    .kpi-card {{ background: {secondary_bg}; padding: 14px; border-radius: 10px;
-                 box-shadow: 0 2px 8px rgba(0,0,0,0.06); }}
-    .kpi-label {{ font-size:14px; color: {text}; opacity:0.8; }}
-    .kpi-value {{ font-size:20px; font-weight:700; color: {text}; }}
-    </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
 
 
 # ====================================================
@@ -145,7 +121,7 @@ def sidebar_add_expense(df, save_fn):
         if new_etype and new_etype not in expense_types:
             dropdowns["expense_types"] = sorted(expense_types + [new_etype])
             save_dropdown_options(dropdowns)
-            st.success(f"✅ Added expense type: {new_etype}")
+            st.toast(f"Added expense type: {new_etype}", icon="✅")
             st.rerun()
 
         # ── Shop with inline "add new" ────────────────────────────────────────
@@ -157,14 +133,25 @@ def sidebar_add_expense(df, save_fn):
         if new_shop and new_shop not in shops:
             dropdowns["shops"] = sorted(shops + [new_shop])
             save_dropdown_options(dropdowns)
-            st.success(f"✅ Added shop: {new_shop}")
+            st.toast(f"Added shop: {new_shop}", icon="🏪")
             st.rerun()
 
         # ── Currency ─────────────────────────────────────────────────────────
-        currency = st.selectbox("Currency", ["SEK", "INR"])
-        if currency == "INR":
-            rate = get_exchange_rate("INR", "SEK")
-            st.caption(f"Live rate: 1 INR = {rate:.2f} SEK" if rate else "Rate unavailable")
+        currency = st.selectbox(
+            "Currency",
+            SUPPORTED_CURRENCIES,
+            index=SUPPORTED_CURRENCIES.index(DEFAULT_CURRENCY)
+            if DEFAULT_CURRENCY in SUPPORTED_CURRENCIES else 0,
+        )
+        if currency != DEFAULT_CURRENCY:
+            # get_exchange_rate returns (rate, error) — unpack it before use.
+            rate, _rate_err = get_exchange_rate(currency, DEFAULT_CURRENCY)
+            st.caption(
+                f"Live rate: 1 {currency} = {rate:.2f} {DEFAULT_CURRENCY}"
+                if rate else "Rate unavailable — amount will be saved as-entered"
+            )
+            if not rate:
+                rate = 1.0
         else:
             rate = 1.0
 
@@ -183,7 +170,7 @@ def sidebar_add_expense(df, save_fn):
             if new_cat not in dropdowns.get("subcategories", {}):
                 dropdowns.setdefault("subcategories", {})[new_cat] = []
             save_dropdown_options(dropdowns)
-            st.success(f"✅ Added category: {new_cat}")
+            st.toast(f"Added category: {new_cat}", icon="📂")
             st.rerun()
 
         # ── Subcategory with inline "add new" ─────────────────────────────────
@@ -203,7 +190,7 @@ def sidebar_add_expense(df, save_fn):
                 dropdowns["subcategories"][category] + [new_sub]
             )
             save_dropdown_options(dropdowns)
-            st.success(f"✅ Added subcategory: {new_sub} → {category}")
+            st.toast(f"Added subcategory: {new_sub} → {category}", icon="✅")
             st.rerun()
 
     # ---------------- ADD ITEM FORM (WITH VALIDATION) ----------------
@@ -311,7 +298,10 @@ def sidebar_add_expense(df, save_fn):
                     Columns.QUANTITY:      quantity,
                     Columns.QUANTITY_UNIT: unit,
                     Columns.PRICE_PAID:    price,
-                    Columns.CURRENCY:      currency,
+                    # price is already converted to the base currency above, so
+                    # the stored currency is the base — not the entry currency —
+                    # keeping every stored amount in one currency for correct totals.
+                    Columns.CURRENCY:      DEFAULT_CURRENCY,
                     Columns.PRICE_PER_UNIT: price_per_unit,
                 }
 
@@ -322,7 +312,7 @@ def sidebar_add_expense(df, save_fn):
                     "item": "", "brand": "", "quantity": "", "unit": "Count", "amount": ""
                 }
 
-                st.success(f"✅ Added: {item_clean} ({price:.2f} SEK)")
+                st.toast(f"Added: {item_clean} ({price:.2f} SEK)", icon="➕")
                 st.rerun()
 
         # ---------------- SHOW ITEMS + SAVE ----------------
@@ -367,7 +357,7 @@ def sidebar_add_expense(df, save_fn):
                             Columns.PRICE_PER_UNIT: ppu,
                             Columns.QUANTITY_UNIT:  ei_unit,
                         })
-                        st.success("✅ Item updated!")
+                        st.toast("Item updated", icon="✏️")
                         st.rerun()
 
             # Items table
@@ -436,25 +426,42 @@ def sidebar_add_expense(df, save_fn):
                             for err in v_errors[:5]:
                                 st.error(err)
                         else:
-                            new_rows = [
-                                {
+                            # Build full rows, then pass each through the
+                            # ExpenseItem model as a persistence-time
+                            # validation + normalisation step (the model's
+                            # constraints are the last line of defence, and
+                            # to_dict() yields the canonical row shape).
+                            new_rows = []
+                            model_errors = []
+                            for entry in st.session_state["multi_items"]:
+                                row = {
                                     Columns.DATE:         pd.to_datetime(date).date(),
                                     Columns.EXPENSE_TYPE: expense_type,
                                     Columns.SHOP:         shop,
                                     **entry,
                                 }
-                                for entry in st.session_state["multi_items"]
-                            ]
-                            # ── Duplicate check ───────────────────────────────
-                            dups = _check_duplicates(new_rows, df)
-                            if dups:
-                                st.session_state["_dup_warning_active"] = True
-                                st.session_state["_dup_descs"]          = dups
-                                st.session_state["_pending_new_rows"]   = new_rows
-                                st.rerun()
+                                try:
+                                    row = ExpenseItem.from_dict(row).to_dict()
+                                except PydanticValidationError as e:
+                                    item_name = entry.get(Columns.ITEM, "?")
+                                    model_errors.append(f"{item_name}: {e.errors()[0]['msg']}")
+                                new_rows.append(row)
+
+                            if model_errors:
+                                st.error("**Cannot save — invalid item(s):**")
+                                for err in model_errors[:5]:
+                                    st.error(err)
                             else:
-                                _do_save(new_rows, df, save_fn)
-                                st.rerun()
+                                # ── Duplicate check ───────────────────────────
+                                dups = _check_duplicates(new_rows, df)
+                                if dups:
+                                    st.session_state["_dup_warning_active"] = True
+                                    st.session_state["_dup_descs"]          = dups
+                                    st.session_state["_pending_new_rows"]   = new_rows
+                                    st.rerun()
+                                else:
+                                    _do_save(new_rows, df, save_fn)
+                                    st.rerun()
 
     # ── Quick-edit last saved expense ─────────────────────────────────────────
     last_batch = st.session_state.get("_last_saved_batch")
@@ -484,7 +491,7 @@ def sidebar_add_expense(df, save_fn):
                     trimmed = df.iloc[:-n].copy() if n <= len(df) else df.iloc[0:0].copy()
                     merged  = pd.concat([trimmed, edited_batch], ignore_index=True)
                     save_fn(merged)
-                    st.success("✅ Changes re-saved!")
+                    st.toast("Changes re-saved", icon="💾")
                     for k in ("_last_saved_batch", "_last_saved_count"):
                         st.session_state.pop(k, None)
                     bump_data_version()
@@ -745,7 +752,7 @@ def inline_edit_table(df, save_fn, sheet=None):
             updated_df = pd.concat([df_base[~mask], edited_df], ignore_index=True)
 
             save_fn(updated_df, sheet)
-            st.success("✅ Saved successfully!")
+            st.toast("Changes saved", icon="💾")
             st.cache_data.clear()
 
             from data_manager import bump_data_version

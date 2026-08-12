@@ -1,6 +1,7 @@
 # data_manager.py
 
 import os
+import uuid
 
 import pandas as pd
 import streamlit as st
@@ -8,6 +9,7 @@ import streamlit as st
 from config import (
     USE_GOOGLE_SHEETS, SHEET_NAME, WORKSHEET_NAME,
     LOCAL_CSV_FILE, CREDENTIALS_FILE, CACHE_TTL_MEDIUM,
+    GOOGLE_DRIVE_SCOPE,
     Columns, SessionKeys
 )
 from error_handler import (
@@ -17,6 +19,11 @@ from error_handler import (
     ErrorHandler,
     ErrorRecovery,
     logger
+)
+from security_utils import (
+    sanitize_df_for_export,
+    validate_upload,
+    UploadValidationError,
 )
 
 
@@ -46,7 +53,7 @@ def init_storage():
 
         scope = [
             "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
+            GOOGLE_DRIVE_SCOPE
         ]
 
         creds = ServiceAccountCredentials.from_json_keyfile_name(
@@ -116,8 +123,16 @@ def load_data(_sheet=None, version=0):
             logger.info("Loading data from Google Sheets")
             records = _sheet.get_all_records()
             df = pd.DataFrame(records)
-            logger.info(f"Loaded {len(df)} rows from Google Sheets")
-            return df
+            if not df.empty:
+                logger.info(f"Loaded {len(df)} rows from Google Sheets")
+                return df
+            # Sheet returned 0 rows. Rather than trust an empty/cleared Sheet,
+            # fall through to the local CSV so good local data is never masked
+            # (e.g. after an interrupted write). The startup write-back then
+            # repopulates the Sheet from this data.
+            logger.warning(
+                "Google Sheets returned 0 rows — falling back to local CSV if available"
+            )
         except Exception as e:
             DataErrorHandler.handle_load_error(e, "Google Sheets")
             # Fall through to local CSV
@@ -170,21 +185,63 @@ def ensure_no_duplicates(df: pd.DataFrame, sheet=None) -> pd.DataFrame:
     if df.empty:
         return df
 
+    # Backfill stable ids for any legacy rows that predate them so future
+    # dedup is identity-based (and this one-time migration is persisted below).
+    had_id_col = Columns.ENTRY_ID in df.columns
+    before_ids = (
+        df[Columns.ENTRY_ID].astype(str).tolist() if had_id_col else None
+    )
+    df = ensure_entry_ids(df)
+    ids_changed = (not had_id_col) or (
+        df[Columns.ENTRY_ID].astype(str).tolist() != before_ids
+    )
+
     clean_df = deduplicate_entries(df)
     removed = len(df) - len(clean_df)
 
-    if removed > 0:
+    if removed > 0 or ids_changed:
         logger.info(
             f"ensure_no_duplicates: writing back {len(clean_df)} rows "
-            f"after removing {removed} duplicate(s)"
+            f"(removed {removed} duplicate(s), ids_added={ids_changed})"
         )
         save_data(clean_df, sheet=sheet)
-        st.toast(
-            f"🗑️ Removed {removed} duplicate entr{'y' if removed == 1 else 'ies'} and saved.",
-            icon="ℹ️",
-        )
+        if removed > 0:
+            st.toast(
+                f"🗑️ Removed {removed} duplicate entr{'y' if removed == 1 else 'ies'} and saved.",
+                icon="ℹ️",
+            )
 
     return clean_df
+
+
+def restore_sheet_if_empty(df: pd.DataFrame, sheet=None) -> None:
+    """
+    Repopulate an empty Google Sheet from local data.
+
+    If the worksheet has no data rows (e.g. after an interrupted write cleared
+    it) but ``df`` — sourced from the local CSV fallback — has rows, write those
+    rows back so the Sheet is restored. No-op when the Sheet already has data,
+    when there is no sheet, or when ``df`` is empty.
+    """
+    if sheet is None or df is None or df.empty:
+        return
+    try:
+        existing = sheet.get_all_values()
+        # <= 1 means empty or header-only.
+        if len(existing) <= 1:
+            logger.warning(
+                f"Google Sheet is empty — restoring {len(df)} row(s) from local data"
+            )
+            save_data(ensure_entry_ids(df), sheet=sheet)
+            try:
+                st.toast(
+                    f"↩️ Restored {len(df)} rows to Google Sheets from local backup.",
+                    icon="✅",
+                )
+            except Exception:  # noqa: BLE001 – toast is best-effort
+                pass
+    except Exception as e:  # noqa: BLE001 – restore is best-effort
+        logger.warning(f"restore_sheet_if_empty failed: {e}")
 
 
 @log_function_call
@@ -202,7 +259,9 @@ def save_data(df, sheet=None):
     Raises:
         Exception: If save fails to all destinations
     """
-    # Deduplicate before saving to prevent persisting duplicate entries
+    # Assign stable ids to any new rows, then deduplicate (identity-based when
+    # ids are present) before persisting so duplicate rows are never written.
+    df = ensure_entry_ids(df)
     before_count = len(df)
     df = deduplicate_entries(df)
     removed = before_count - len(df)
@@ -212,6 +271,24 @@ def save_data(df, sheet=None):
             icon="ℹ️",
         )
 
+    # Point-in-time snapshot before persisting. Keeps a rotating history of
+    # recent saved states under data/backups/ so any bad write can be rolled
+    # back (see backup_manager.list_backups / restore_backup). Best-effort:
+    # a snapshot failure must never block the actual save.
+    if not df.empty:
+        try:
+            from backup_manager import create_backup
+            snapshot_path = create_backup(df, label="autosave")
+            # Mirror the snapshot to Drive so the history survives losing the
+            # local machine (best-effort — never blocks the save).
+            try:
+                import data_sync
+                data_sync.push_backup(snapshot_path)
+            except Exception as e:  # noqa: BLE001 – remote mirror is best-effort
+                logger.warning(f"Pushing snapshot to Drive failed: {e}")
+        except Exception as e:  # noqa: BLE001 – backup is best-effort
+            logger.warning(f"Pre-save snapshot failed: {e}")
+
     save_successful = False
     errors = []
 
@@ -219,11 +296,38 @@ def save_data(df, sheet=None):
     if sheet:
         try:
             logger.info(f"Saving {len(df)} rows to Google Sheets")
-            sheet.clear()
-            sheet.append_row(df.columns.tolist())
-            sheet.append_rows(df.astype(str).values.tolist())
-            logger.info("Successfully saved to Google Sheets")
-            save_successful = True
+            # NaN/Inf are not JSON-compliant and this pandas version's
+            # astype(str) leaves NaN as a float, so blank them explicitly
+            # before serialising to the Sheets API.
+            safe = df.replace([float("inf"), float("-inf")], pd.NA).fillna("").astype(str)
+            data = [safe.columns.tolist()] + safe.values.tolist()
+
+            # Skip the (O(n), quota-costing) upload when the data is byte-for-byte
+            # identical to what we last wrote to Sheets this session. Avoids
+            # redundant full rewrites; genuine edits change the signature and
+            # still write. The local CSV below is always written regardless.
+            try:
+                import hashlib
+                sig = hashlib.md5(repr(data).encode("utf-8")).hexdigest()
+            except Exception:  # noqa: BLE001
+                sig = None
+            if sig is not None and st.session_state.get("_last_sheet_sig") == sig:
+                logger.info("Google Sheets unchanged since last save — skipping upload")
+                save_successful = True
+            else:
+                # Overwrite IN PLACE starting at A1 — do NOT clear() first. This
+                # is the key safety property: if the write fails midway
+                # (network/API error), the previous contents are still there, so
+                # the sheet is never left empty. Only after the new rows are
+                # written do we blank any leftover trailing rows from a
+                # previously larger dataset.
+                sheet.update(values=data, range_name="A1")
+                if sheet.row_count > len(data):
+                    sheet.batch_clear([f"A{len(data) + 1}:Z{sheet.row_count}"])
+                if sig is not None:
+                    st.session_state["_last_sheet_sig"] = sig
+                logger.info("Successfully saved to Google Sheets")
+                save_successful = True
         except Exception as e:
             error_msg = f"Google Sheets save failed: {str(e)}"
             errors.append(error_msg)
@@ -291,12 +395,27 @@ def import_data(uploaded_file):
     logger.info(f"Importing file: {filename}")
 
     try:
+        # Reject oversized / wrong-type uploads before loading into memory.
+        validate_upload(uploaded_file, max_mb=25, allowed_ext=(".csv", ".xlsx", ".xls"))
+    except UploadValidationError as e:
+        st.error(f"❌ {e}")
+        return None
+
+    try:
         if filename.endswith(".csv"):
             df = pd.read_csv(uploaded_file)
         elif filename.endswith((".xlsx", ".xls")):
             df = pd.read_excel(uploaded_file)
         else:
             raise ValueError(f"Unsupported file type: {filename}")
+
+        # Imported data bypasses the entry form's conversion, so normalise any
+        # foreign-currency rows to the base currency to keep totals correct.
+        try:
+            from currency_manager import normalize_currency_to_base
+            df = normalize_currency_to_base(df)
+        except Exception as e:  # noqa: BLE001 – normalisation is best-effort
+            logger.warning(f"Currency normalisation skipped for import: {e}")
 
         logger.info(f"Successfully imported {len(df)} rows from {filename}")
         return df
@@ -329,6 +448,9 @@ def export_data_bytes(df, file_type="csv"):
         Tuple of (bytes, mime_type) or (None, None) on error
     """
     logger.info(f"Exporting data as {file_type}")
+
+    # Neutralise spreadsheet formula injection before writing any download.
+    df = sanitize_df_for_export(df)
 
     try:
         if file_type == "csv":
@@ -398,21 +520,53 @@ def clean_data(df):
         return df
 
 
+def ensure_entry_ids(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Guarantee every row has a stable, unique ``EntryId``.
+
+    Rows that are missing an id (blank/NaN) — or that share an id with an
+    earlier row (e.g. after a copy) — are assigned a fresh short UUID. Existing
+    ids are preserved so a row's identity is stable across saves/reloads.
+
+    This is what lets deduplication be identity-based: two genuinely-identical
+    purchases keep distinct ids and are therefore never merged.
+
+    Returns the DataFrame (a copy only when changes are needed).
+    """
+    if df is None or df.empty:
+        return df
+
+    if Columns.ENTRY_ID not in df.columns:
+        df = df.copy()
+        df[Columns.ENTRY_ID] = ""
+
+    ids = df[Columns.ENTRY_ID].astype("string").fillna("").str.strip()
+    missing = ids.eq("") | ids.str.lower().isin(["nan", "none"])
+    duplicated = ids.duplicated(keep="first") & ~missing
+    need = missing | duplicated
+
+    if need.any():
+        df = df.copy()
+        new_ids = [uuid.uuid4().hex[:12] for _ in range(int(need.sum()))]
+        df.loc[need, Columns.ENTRY_ID] = new_ids
+
+    return df
+
+
 def deduplicate_entries(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Remove fully duplicate rows — identical across all core columns.
+    Remove duplicate rows.
 
-    Keeps the first occurrence of each duplicate group and drops the
-    rest. Safe to call from cached functions because it makes no
-    Streamlit UI calls.
+    Preferred path (identity-based): when every row carries an ``EntryId``,
+    duplicates are rows sharing the same id. Two purchases that happen to be
+    identical in every visible field keep distinct ids and are BOTH preserved.
 
-    A duplicate is defined as two or more rows sharing the same value
-    in every column of Columns.all_core():
-        Date, ExpenseType, Category, Subcategory, Item, Brand, Shop,
-        PricePaid, Currency, Quantity, QuantityUnit, PricePerUnit.
+    Fallback path (legacy value-based): for data that predates ids — e.g. a
+    partial import — a duplicate is a row identical across every column of
+    Columns.all_core(). If even one field differs the rows are kept.
 
-    If even one field differs the rows are treated as distinct entries
-    and both are kept.
+    Keeps the first occurrence of each duplicate group. Safe to call from
+    cached functions because it makes no Streamlit UI calls.
 
     Args:
         df: DataFrame to deduplicate
@@ -423,10 +577,18 @@ def deduplicate_entries(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Only use columns that actually exist (guards partial-schema imports)
-    dedup_cols = [col for col in Columns.all_core() if col in df.columns]
-    if not dedup_cols:
-        return df
+    ids_present = (
+        Columns.ENTRY_ID in df.columns
+        and df[Columns.ENTRY_ID].astype("string").fillna("").str.strip().ne("").all()
+    )
+
+    if ids_present:
+        dedup_cols = [Columns.ENTRY_ID]
+    else:
+        # Legacy value-based comparison over the columns that actually exist.
+        dedup_cols = [col for col in Columns.all_core() if col in df.columns]
+        if not dedup_cols:
+            return df
 
     before = len(df)
     df = df.drop_duplicates(subset=dedup_cols, keep="first").reset_index(drop=True)

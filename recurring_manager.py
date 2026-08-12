@@ -12,6 +12,8 @@ from config import Columns
 
 
 RECURRING_FILE = "data/recurring.json"
+from json_store import JsonStore
+_RECURRING_STORE = JsonStore(RECURRING_FILE, default=[], sync=False)
 
 
 FREQUENCIES = {
@@ -28,18 +30,11 @@ FREQUENCIES = {
 # STORAGE
 # ============================================================
 def load_recurring() -> list:
-    path = Path(RECURRING_FILE)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return []
-    return []
+    return _RECURRING_STORE.load()
 
 
 def save_recurring(templates: list):
-    Path(RECURRING_FILE).parent.mkdir(parents=True, exist_ok=True)
-    Path(RECURRING_FILE).write_text(json.dumps(templates, indent=2, default=str))
+    _RECURRING_STORE.save(templates)
 
 
 def add_template(template: dict):
@@ -82,26 +77,99 @@ def get_due_templates() -> list:
     return [t for t in load_recurring() if is_due(t)]
 
 
-def apply_template(template: dict, df: pd.DataFrame, save_fn) -> pd.DataFrame:
-    """Apply a template and add to the expense DataFrame."""
-    today = date.today()
-    new_row = {
-        Columns.DATE: today,
+def _build_row(template: dict, when: date) -> dict:
+    """Build a single expense row for *template* dated *when*."""
+    price = float(template.get("price", 0))
+    qty = float(template.get("quantity", 1))
+    return {
+        Columns.DATE: when,
         Columns.EXPENSE_TYPE: template.get("expense_type", "Service"),
         Columns.CATEGORY: template.get("category", ""),
         Columns.SUBCATEGORY: template.get("subcategory", ""),
         Columns.ITEM: template.get("item", ""),
         Columns.BRAND: template.get("brand", ""),
         Columns.SHOP: template.get("shop", ""),
-        Columns.PRICE_PAID: float(template.get("price", 0)),
+        Columns.PRICE_PAID: price,
         Columns.CURRENCY: template.get("currency", "SEK"),
-        Columns.QUANTITY: float(template.get("quantity", 1)),
+        Columns.QUANTITY: qty,
         Columns.QUANTITY_UNIT: template.get("unit", "Count"),
-        Columns.PRICE_PER_UNIT: round(float(template.get("price", 0)) / max(float(template.get("quantity", 1)), 0.01), 2),
+        Columns.PRICE_PER_UNIT: round(price / max(qty, 0.01), 2),
     }
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+
+def apply_template(template: dict, df: pd.DataFrame, save_fn) -> pd.DataFrame:
+    """Apply a template once (dated today) and add to the expense DataFrame."""
+    df = pd.concat([df, pd.DataFrame([_build_row(template, date.today())])], ignore_index=True)
     update_last_applied(template["id"])
     return df
+
+
+# Safety cap so a long-dormant high-frequency template (e.g. Daily last applied
+# a year ago) can't post thousands of rows in a single catch-up run.
+_CATCHUP_CAP = 366
+
+
+def due_dates(template: dict, today: date = None) -> list:
+    """
+    Return every date a template *should* post on, from just after its last
+    application up to and including *today*.
+
+    * Never-applied templates return ``[today]`` (a single first posting — no
+      back-fill, since there's no start reference).
+    * Applied templates return one date per missed period (multi-period
+      catch-up), bounded by :data:`_CATCHUP_CAP`.
+    * Not-yet-due templates return ``[]``.
+    """
+    today = today or date.today()
+    last = template.get("last_applied")
+    freq_days = FREQUENCIES.get(template.get("frequency", "Monthly"), 30)
+    if last is None:
+        return [today]
+    try:
+        last_date = datetime.strptime(last, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return [today]
+    dates = []
+    nxt = last_date + timedelta(days=freq_days)
+    while nxt <= today and len(dates) < _CATCHUP_CAP:
+        dates.append(nxt)
+        nxt = nxt + timedelta(days=freq_days)
+    return dates
+
+
+def auto_apply_due_templates(df: pd.DataFrame, save_fn, sheet=None):
+    """
+    Auto-post every *due* template that opted into ``auto_post``, with
+    multi-period catch-up.
+
+    Intended to run once per session at startup. For each opted-in template,
+    one row is posted per missed period (see :func:`due_dates`), each dated at
+    the period it belongs to, then ``last_applied`` is advanced to today and the
+    dataset is saved once.
+
+    Returns ``(updated_df, [applied item names])`` — one name per row posted.
+    """
+    templates = load_recurring()
+    applied = []
+    new_rows = []
+    changed = False
+    for t in templates:
+        if not t.get("auto_post"):
+            continue
+        dates = due_dates(t)
+        if not dates:
+            continue
+        for when in dates:
+            new_rows.append(_build_row(t, when))
+            applied.append(t.get("item", "?"))
+        t["last_applied"] = str(date.today())
+        changed = True
+
+    if changed:
+        df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+        save_recurring(templates)   # persist advanced last_applied
+        save_fn(df, sheet)
+    return df, applied
 
 
 # ============================================================
@@ -137,6 +205,9 @@ def recurring_manager_ui(df: pd.DataFrame, save_fn, sheet=None):
                 c1.markdown(f"**Category:** {t.get('category', '—')}")
                 c2.markdown(f"**Shop:** {t.get('shop', '—')}")
                 c3.markdown(f"**Last Applied:** {t.get('last_applied') or 'Never'}")
+                st.markdown(
+                    "**Auto-post:** " + ("🔁 On" if t.get("auto_post") else "Off — apply manually")
+                )
                 if st.button("🗑️ Delete Template", key=f"del_{t['id']}"):
                     delete_template(t["id"])
                     st.rerun()
@@ -158,6 +229,11 @@ def recurring_manager_ui(df: pd.DataFrame, save_fn, sheet=None):
         shop = c2.text_input("Shop/Provider", placeholder="e.g., Netflix, Landlord")
         frequency = st.selectbox("Frequency", list(FREQUENCIES.keys()), index=2)
         note = st.text_input("Note (optional)")
+        auto_post = st.checkbox(
+            "🔁 Auto-post when due",
+            value=False,
+            help="Automatically add this expense each period on app open — no manual Apply needed.",
+        )
 
         if st.form_submit_button("💾 Save Template", type="primary"):
             if item.strip() and price > 0:
@@ -165,7 +241,7 @@ def recurring_manager_ui(df: pd.DataFrame, save_fn, sheet=None):
                     "item": item.strip(), "expense_type": expense_type,
                     "price": price, "quantity": quantity, "category": category,
                     "shop": shop.strip(), "frequency": frequency, "note": note,
-                    "currency": "SEK", "unit": "Count"
+                    "currency": "SEK", "unit": "Count", "auto_post": auto_post,
                 })
                 st.success(f"✅ Template saved: {item}")
                 st.rerun()

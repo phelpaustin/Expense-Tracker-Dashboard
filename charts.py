@@ -10,13 +10,10 @@ from config import (
 )
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=16)
 def grouped_monthly(df):
-    df2 = df.copy()
-    # Use Columns constants instead of magic strings
-    df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
-    df2 = df2.dropna(subset=[Columns.DATE])
-    df2[Columns.YEAR_MONTH] = df2[Columns.DATE].dt.to_period("M").astype(str)
+    from utils import prepare_expense_df
+    df2 = prepare_expense_df(df, numeric_price=False)
     agg = (
         df2.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID]
         .sum()
@@ -26,34 +23,77 @@ def grouped_monthly(df):
     return agg
 
 
-def kpi_row(df):
+@st.cache_data(ttl=300, max_entries=16)
+def _month_stats(df_full):
+    """
+    Cache the (expensive) date parsing + current/previous-month slicing once
+    per frame, returning just the scalar totals kpi_row needs. Keyed on the
+    frame so it is not recomputed on every rerun.
+    """
+    if df_full is None or df_full.empty or Columns.PRICE_PAID not in df_full.columns:
+        return None
+    d = df_full[[Columns.DATE, Columns.PRICE_PAID]].copy()
+    d[Columns.DATE] = pd.to_datetime(d[Columns.DATE], errors="coerce")
+    d = d.dropna(subset=[Columns.DATE])
+    if d.empty:
+        return None
+    now = pd.Timestamp.now()
+    prev_month = now - pd.DateOffset(months=1)
+    curr = d[(d[Columns.DATE].dt.year == now.year) & (d[Columns.DATE].dt.month == now.month)][Columns.PRICE_PAID]
+    prev = d[(d[Columns.DATE].dt.year == prev_month.year) & (d[Columns.DATE].dt.month == prev_month.month)][Columns.PRICE_PAID]
+    return {
+        "curr_sum": float(curr.sum()),
+        "prev_sum": float(prev.sum()),
+        "curr_mean": float(curr.mean()) if len(curr) else 0.0,
+        "prev_mean": float(prev.mean()) if len(prev) else 0.0,
+    }
+
+
+def _delta_text(curr_val, prev_val):
+    """Format a month-over-month delta. Lower spending is 'good' (green)."""
+    if not prev_val:
+        return None, None, None
+    pct = (curr_val - prev_val) / prev_val * 100
+    if abs(pct) < 0.05:
+        return "0.0% vs last month", "", True
+    direction = "up" if pct > 0 else "down"
+    good = pct < 0  # spending less than last month is good
+    return f"{abs(pct):.1f}% vs last month", direction, good
+
+
+def kpi_row(df, df_full=None):
     # Use Columns and UIConstants instead of magic strings
     if df.empty or Columns.PRICE_PAID not in df.columns:
-        st.info(UIConstants.MSG_NO_DATA)
+        from page_helpers import empty_state
+        empty_state(UIConstants.MSG_NO_DATA)
         return
 
     total_spent = df[Columns.PRICE_PAID].sum()
     avg_tx = df[Columns.PRICE_PAID].mean() if len(df) > 0 else 0
     categories = df[Columns.CATEGORY].nunique()
-    
-    col1, col2, col3 = st.columns(3)
-    col1.markdown(
-        f"<div class='kpi-card'><div class='kpi-label'>💰 Total Spent</div><div class='kpi-value'>{total_spent:,.0f} SEK</div></div>",
-        unsafe_allow_html=True,
-    )
-    col2.markdown(
-        f"<div class='kpi-card'><div class='kpi-label'>🧾 Avg Transaction</div><div class='kpi-value'>{avg_tx:,.0f} SEK</div></div>",
-        unsafe_allow_html=True,
-    )
-    col3.markdown(
-        f"<div class='kpi-card'><div class='kpi-label'>📂 Categories</div><div class='kpi-value'>{categories}</div></div>",
-        unsafe_allow_html=True,
-    )
+
+    stats = _month_stats(df_full)
+    if stats:
+        total_delta, total_dir, total_good = _delta_text(stats["curr_sum"], stats["prev_sum"])
+        avg_delta, avg_dir, avg_good = _delta_text(stats["curr_mean"], stats["prev_mean"])
+    else:
+        total_delta = total_dir = total_good = None
+        avg_delta = avg_dir = avg_good = None
+
+    from page_helpers import animated_metric_row
+    animated_metric_row([
+        {"label": "💰 Total Spent", "value": total_spent, "suffix": " SEK", "decimals": 0,
+         "delta": total_delta, "delta_dir": total_dir, "delta_good": total_good},
+        {"label": "🧾 Avg Transaction", "value": avg_tx, "suffix": " SEK", "decimals": 0,
+         "delta": avg_delta, "delta_dir": avg_dir, "delta_good": avg_good},
+        {"label": "📂 Categories", "value": categories, "decimals": 0},
+    ])
 
 
 def category_pie(df):
     if df.empty:
-        st.info(UIConstants.MSG_NO_DATA)
+        from page_helpers import empty_state
+        empty_state(UIConstants.MSG_NO_DATA)
         return
     
     # Use Columns constants

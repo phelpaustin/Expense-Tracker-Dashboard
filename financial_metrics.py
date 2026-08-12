@@ -73,8 +73,14 @@ def calculate_expense_volatility(df: pd.DataFrame) -> dict:
     }
 
 
-def calculate_cash_flow(df: pd.DataFrame, income: float = None) -> pd.DataFrame:
-    """Calculate monthly cash flow (income - expenses)."""
+def calculate_cash_flow(df: pd.DataFrame, income: float = None, income_map: dict = None) -> pd.DataFrame:
+    """
+    Calculate monthly cash flow (income - expenses).
+
+    If *income_map* ({``'YYYY-MM'``: amount}) is given, each month uses its
+    actual recorded income (falling back to the flat *income* for months with
+    no entry). Otherwise the flat *income* is applied to every month.
+    """
     if df.empty:
         return pd.DataFrame()
     
@@ -86,14 +92,19 @@ def calculate_cash_flow(df: pd.DataFrame, income: float = None) -> pd.DataFrame:
     # Monthly expenses
     monthly_expenses = df.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID].sum().reset_index()
     monthly_expenses.columns = ["Month", "Expenses"]
-    
-    # Add income (if provided, use same for all months)
-    if income:
-        monthly_expenses["Income"] = income
-        monthly_expenses["Cash Flow"] = monthly_expenses["Income"] - monthly_expenses["Expenses"]
-        monthly_expenses["Cumulative"] = monthly_expenses["Cash Flow"].cumsum()
-    
     monthly_expenses["Month"] = monthly_expenses["Month"].astype(str)
+
+    if income_map:
+        monthly_expenses["Income"] = (
+            monthly_expenses["Month"].map(income_map).fillna(float(income or 0))
+        )
+    elif income:
+        monthly_expenses["Income"] = float(income)
+    else:
+        return monthly_expenses
+
+    monthly_expenses["Cash Flow"] = monthly_expenses["Income"] - monthly_expenses["Expenses"]
+    monthly_expenses["Cumulative"] = monthly_expenses["Cash Flow"].cumsum()
     return monthly_expenses
 
 
@@ -204,6 +215,263 @@ def plot_financial_health_score(metrics: dict):
             st.error("🚨 Needs attention")
 
 
+def _render_health_tab(savings_metrics: dict, volatility_metrics: dict) -> None:
+    st.markdown("### 🎯 Financial Health Score")
+
+    metrics_combined = {
+        **savings_metrics,
+        **volatility_metrics
+    }
+    plot_financial_health_score(metrics_combined)
+
+    # Detailed metrics
+    st.markdown("#### 📋 Detailed Breakdown")
+
+    col_d1, col_d2 = st.columns(2)
+
+    with col_d1:
+        st.markdown("##### Savings")
+        st.write(f"**Rate**: {savings_metrics['savings_rate']:.1f}%")
+        st.write(f"**Amount**: {savings_metrics['monthly_savings']:,.0f} SEK/month")
+        st.write(f"**Income**: {savings_metrics['income']:,.0f} SEK")
+        st.write(f"**Expenses**: {savings_metrics['total_spent']:,.0f} SEK")
+
+        # Savings gauge
+        fig_savings = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=savings_metrics['savings_rate'],
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "Savings Rate"},
+            gauge={
+                'axis': {'range': [None, 50]},
+                'bar': {'color': "#667eea"},
+                'steps': [
+                    {'range': [0, 10], 'color': "#fee"},
+                    {'range': [10, 20], 'color': "#fdd"},
+                    {'range': [20, 30], 'color': "#dfd"},
+                    {'range': [30, 50], 'color': "#dff"}
+                ],
+                'threshold': {
+                    'line': {'color': "green", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 20
+                }
+            }
+        ))
+        fig_savings.update_layout(height=300)
+        st.plotly_chart(fig_savings)
+
+    with col_d2:
+        st.markdown("##### Stability")
+        st.write(f"**Volatility**: {volatility_metrics['std_dev']:,.0f} SEK")
+        st.write(f"**Coefficient of Variation**: {volatility_metrics['coefficient_variation']:.1f}%")
+        st.write(f"**Average Monthly**: {volatility_metrics.get('mean_spending', 0):,.0f} SEK")
+
+        # Stability score
+        stability_score = max(0, 100 - volatility_metrics['coefficient_variation'])
+        fig_stability = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=stability_score,
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "Stability Score"},
+            gauge={
+                'axis': {'range': [None, 100]},
+                'bar': {'color': "#8b5cf6"},
+                'steps': [
+                    {'range': [0, 50], 'color': "#fee"},
+                    {'range': [50, 75], 'color': "#ffd"},
+                    {'range': [75, 100], 'color': "#dfd"}
+                ]
+            }
+        ))
+        fig_stability.update_layout(height=300)
+        st.plotly_chart(fig_stability)
+
+
+def _render_cash_flow_tab(df: pd.DataFrame, monthly_income: float, income_map: dict = None) -> None:
+    st.markdown("### 💵 Cash Flow Analysis")
+
+    if monthly_income > 0 or income_map:
+        cash_flow_df = calculate_cash_flow(df, monthly_income, income_map)
+
+        if not cash_flow_df.empty:
+            # Cash flow chart
+            fig = go.Figure()
+
+            fig.add_trace(go.Bar(
+                x=cash_flow_df["Month"],
+                y=cash_flow_df["Income"],
+                name="Income",
+                marker_color='#22c55e'
+            ))
+
+            fig.add_trace(go.Bar(
+                x=cash_flow_df["Month"],
+                y=cash_flow_df["Expenses"],
+                name="Expenses",
+                marker_color='#ef4444'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=cash_flow_df["Month"],
+                y=cash_flow_df["Cash Flow"],
+                name="Net Cash Flow",
+                line=dict(color='#667eea', width=3),
+                mode='lines+markers'
+            ))
+
+            fig.update_layout(
+                title="Monthly Cash Flow",
+                xaxis_title="Month",
+                yaxis_title="Amount (SEK)",
+                barmode='group',
+                height=400,
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig)
+
+            # Cumulative cash flow
+            fig_cum = px.line(
+                cash_flow_df,
+                x="Month",
+                y="Cumulative",
+                title="Cumulative Cash Flow",
+                markers=True
+            )
+            fig_cum.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig_cum.update_layout(height=350)
+            st.plotly_chart(fig_cum)
+
+            # Summary table
+            st.dataframe(
+                cash_flow_df.style.format({
+                    "Income": "{:,.0f} SEK",
+                    "Expenses": "{:,.0f} SEK",
+                    "Cash Flow": "{:+,.0f} SEK",
+                    "Cumulative": "{:+,.0f} SEK"
+                }),
+                width="stretch",
+                hide_index=True
+            )
+        else:
+            st.info("Not enough data for cash flow analysis")
+    else:
+        st.warning("Set your monthly income above to see cash flow analysis")
+
+
+def _render_allocation_tab(allocation: pd.DataFrame) -> None:
+    st.markdown("### 📊 Category Allocation")
+
+    if not allocation.empty:
+        # Pie chart
+        fig_pie = px.pie(
+            allocation,
+            values="Amount",
+            names="Category",
+            title="Spending by Category",
+            hole=0.4
+        )
+        fig_pie.update_layout(height=400)
+        st.plotly_chart(fig_pie)
+
+        # Allocation table
+        st.markdown("#### Detailed Allocation")
+        st.dataframe(
+            allocation.style.format({
+                "Amount": "{:,.0f} SEK",
+                "Percentage": "{:.1f}%"
+            }).bar(subset=["Percentage"], color='#667eea'),
+            width="stretch",
+            hide_index=True
+        )
+
+        # Budget recommendations
+        st.markdown("#### 💡 Recommended Allocation")
+        st.info("""
+        **Ideal Budget Allocation (50/30/20 rule)**:
+        - 50% Needs (Housing, Food, Transport)
+        - 30% Wants (Entertainment, Dining Out)
+        - 20% Savings & Debt
+        """)
+    else:
+        st.info("No category data available")
+
+
+def _render_trends_tab(df: pd.DataFrame, monthly_income: float) -> None:
+    st.markdown("### 📈 Spending Trends")
+
+    # Monthly trend
+    df_trend = df.copy()
+    df_trend[Columns.DATE] = pd.to_datetime(df_trend[Columns.DATE], errors="coerce")
+    df_trend[Columns.PRICE_PAID] = pd.to_numeric(df_trend[Columns.PRICE_PAID], errors="coerce")
+    df_trend[Columns.YEAR_MONTH] = df_trend[Columns.DATE].dt.to_period("M")
+
+    monthly_trend = df_trend.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID].sum().reset_index()
+    monthly_trend.columns = ["Month", "Spending"]
+    monthly_trend["Month"] = monthly_trend["Month"].astype(str)
+
+    # Add moving average
+    monthly_trend["3-Month MA"] = monthly_trend["Spending"].rolling(window=3).mean()
+
+    fig_trend = go.Figure()
+
+    fig_trend.add_trace(go.Bar(
+        x=monthly_trend["Month"],
+        y=monthly_trend["Spending"],
+        name="Monthly Spending",
+        marker_color='#667eea'
+    ))
+
+    fig_trend.add_trace(go.Scatter(
+        x=monthly_trend["Month"],
+        y=monthly_trend["3-Month MA"],
+        name="3-Month Average",
+        line=dict(color='#ef4444', width=2, dash='dash')
+    ))
+
+    if monthly_income > 0:
+        fig_trend.add_hline(
+            y=monthly_income,
+            line_dash="dot",
+            line_color="green",
+            annotation_text="Income"
+        )
+
+    fig_trend.update_layout(
+        title="Monthly Spending Trend",
+        xaxis_title="Month",
+        yaxis_title="Spending (SEK)",
+        height=400,
+        hovermode='x unified'
+    )
+
+    st.plotly_chart(fig_trend)
+
+    # Growth rate
+    if len(monthly_trend) >= 2:
+        latest_spending = monthly_trend.iloc[-1]["Spending"]
+        previous_spending = monthly_trend.iloc[-2]["Spending"]
+        growth_rate = ((latest_spending - previous_spending) / previous_spending * 100) if previous_spending > 0 else 0
+
+        col_g1, col_g2 = st.columns(2)
+        col_g1.metric(
+            "Month-over-Month Growth",
+            f"{growth_rate:+.1f}%",
+            delta=f"{latest_spending - previous_spending:+,.0f} SEK",
+            delta_color="inverse"
+        )
+
+        # Year-over-year if available
+        if len(monthly_trend) >= 12:
+            yoy_growth = ((latest_spending - monthly_trend.iloc[-13]["Spending"]) / monthly_trend.iloc[-13]["Spending"] * 100)
+            col_g2.metric(
+                "Year-over-Year Growth",
+                f"{yoy_growth:+.1f}%",
+                delta_color="inverse"
+            )
+
+
 def financial_metrics_ui(df: pd.DataFrame):
     """Main UI for financial metrics dashboard."""
     st.title("📊 Financial Metrics Dashboard")
@@ -213,18 +481,36 @@ def financial_metrics_ui(df: pd.DataFrame):
         st.info("No data available yet. Add expenses to see financial metrics!")
         return
     
+    # Income: prefer the first-class income ledger; fall back to a manual figure.
+    income_map = {}
+    ledger_default = None
+    try:
+        import income_manager as im
+        income_map = im.monthly_income_map()
+        if income_map:
+            this_month = im.income_for_month()
+            ledger_default = this_month if this_month > 0 else im.average_monthly_income()
+    except Exception:
+        income_map = {}
+
     # Income input
     st.markdown("### 💰 Income Settings")
     col_inc1, col_inc2 = st.columns([2, 1])
     with col_inc1:
+        default_income = (
+            float(ledger_default) if ledger_default is not None
+            else st.session_state.get("monthly_income", 50000.0)
+        )
         monthly_income = st.number_input(
             "Monthly Income (SEK)",
             min_value=0.0,
-            value=st.session_state.get("monthly_income", 50000.0),
+            value=default_income,
             step=1000.0,
-            help="Your monthly income for calculating savings rate"
+            help="Used for savings rate. Auto-filled from your Income ledger when available."
         )
         st.session_state["monthly_income"] = monthly_income
+        if income_map:
+            st.caption("💡 Cash flow uses your **Income ledger** per month. Manage it on the 💵 Income page.")
     
     st.markdown("---")
     
@@ -276,259 +562,15 @@ def financial_metrics_ui(df: pd.DataFrame):
         "📊 Category Allocation",
         "📈 Trends"
     ])
-    
+
     with tab1:
-        st.markdown("### 🎯 Financial Health Score")
-        
-        metrics_combined = {
-            **savings_metrics,
-            **volatility_metrics
-        }
-        plot_financial_health_score(metrics_combined)
-        
-        # Detailed metrics
-        st.markdown("#### 📋 Detailed Breakdown")
-        
-        col_d1, col_d2 = st.columns(2)
-        
-        with col_d1:
-            st.markdown("##### Savings")
-            st.write(f"**Rate**: {savings_metrics['savings_rate']:.1f}%")
-            st.write(f"**Amount**: {savings_metrics['monthly_savings']:,.0f} SEK/month")
-            st.write(f"**Income**: {savings_metrics['income']:,.0f} SEK")
-            st.write(f"**Expenses**: {savings_metrics['total_spent']:,.0f} SEK")
-            
-            # Savings gauge
-            fig_savings = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=savings_metrics['savings_rate'],
-                domain={'x': [0, 1], 'y': [0, 1]},
-                title={'text': "Savings Rate"},
-                gauge={
-                    'axis': {'range': [None, 50]},
-                    'bar': {'color': "#667eea"},
-                    'steps': [
-                        {'range': [0, 10], 'color': "#fee"},
-                        {'range': [10, 20], 'color': "#fdd"},
-                        {'range': [20, 30], 'color': "#dfd"},
-                        {'range': [30, 50], 'color': "#dff"}
-                    ],
-                    'threshold': {
-                        'line': {'color': "green", 'width': 4},
-                        'thickness': 0.75,
-                        'value': 20
-                    }
-                }
-            ))
-            fig_savings.update_layout(height=300)
-            st.plotly_chart(fig_savings)
-        
-        with col_d2:
-            st.markdown("##### Stability")
-            st.write(f"**Volatility**: {volatility_metrics['std_dev']:,.0f} SEK")
-            st.write(f"**Coefficient of Variation**: {volatility_metrics['coefficient_variation']:.1f}%")
-            st.write(f"**Average Monthly**: {volatility_metrics.get('mean_spending', 0):,.0f} SEK")
-            
-            # Stability score
-            stability_score = max(0, 100 - volatility_metrics['coefficient_variation'])
-            fig_stability = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=stability_score,
-                domain={'x': [0, 1], 'y': [0, 1]},
-                title={'text': "Stability Score"},
-                gauge={
-                    'axis': {'range': [None, 100]},
-                    'bar': {'color': "#8b5cf6"},
-                    'steps': [
-                        {'range': [0, 50], 'color': "#fee"},
-                        {'range': [50, 75], 'color': "#ffd"},
-                        {'range': [75, 100], 'color': "#dfd"}
-                    ]
-                }
-            ))
-            fig_stability.update_layout(height=300)
-            st.plotly_chart(fig_stability)
-    
+        _render_health_tab(savings_metrics, volatility_metrics)
     with tab2:
-        st.markdown("### 💵 Cash Flow Analysis")
-        
-        if monthly_income > 0:
-            cash_flow_df = calculate_cash_flow(df, monthly_income)
-            
-            if not cash_flow_df.empty:
-                # Cash flow chart
-                fig = go.Figure()
-                
-                fig.add_trace(go.Bar(
-                    x=cash_flow_df["Month"],
-                    y=cash_flow_df["Income"],
-                    name="Income",
-                    marker_color='#22c55e'
-                ))
-                
-                fig.add_trace(go.Bar(
-                    x=cash_flow_df["Month"],
-                    y=cash_flow_df["Expenses"],
-                    name="Expenses",
-                    marker_color='#ef4444'
-                ))
-                
-                fig.add_trace(go.Scatter(
-                    x=cash_flow_df["Month"],
-                    y=cash_flow_df["Cash Flow"],
-                    name="Net Cash Flow",
-                    line=dict(color='#667eea', width=3),
-                    mode='lines+markers'
-                ))
-                
-                fig.update_layout(
-                    title="Monthly Cash Flow",
-                    xaxis_title="Month",
-                    yaxis_title="Amount (SEK)",
-                    barmode='group',
-                    height=400,
-                    hovermode='x unified'
-                )
-                
-                st.plotly_chart(fig)
-                
-                # Cumulative cash flow
-                fig_cum = px.line(
-                    cash_flow_df,
-                    x="Month",
-                    y="Cumulative",
-                    title="Cumulative Cash Flow",
-                    markers=True
-                )
-                fig_cum.add_hline(y=0, line_dash="dash", line_color="gray")
-                fig_cum.update_layout(height=350)
-                st.plotly_chart(fig_cum)
-                
-                # Summary table
-                st.dataframe(
-                    cash_flow_df.style.format({
-                        "Income": "{:,.0f} SEK",
-                        "Expenses": "{:,.0f} SEK",
-                        "Cash Flow": "{:+,.0f} SEK",
-                        "Cumulative": "{:+,.0f} SEK"
-                    }),
-                    width="stretch",
-                    hide_index=True
-                )
-            else:
-                st.info("Not enough data for cash flow analysis")
-        else:
-            st.warning("Set your monthly income above to see cash flow analysis")
-    
+        _render_cash_flow_tab(df, monthly_income, income_map)
     with tab3:
-        st.markdown("### 📊 Category Allocation")
-        
-        if not allocation.empty:
-            # Pie chart
-            fig_pie = px.pie(
-                allocation,
-                values="Amount",
-                names="Category",
-                title="Spending by Category",
-                hole=0.4
-            )
-            fig_pie.update_layout(height=400)
-            st.plotly_chart(fig_pie)
-            
-            # Allocation table
-            st.markdown("#### Detailed Allocation")
-            st.dataframe(
-                allocation.style.format({
-                    "Amount": "{:,.0f} SEK",
-                    "Percentage": "{:.1f}%"
-                }).bar(subset=["Percentage"], color='#667eea'),
-                width="stretch",
-                hide_index=True
-            )
-            
-            # Budget recommendations
-            st.markdown("#### 💡 Recommended Allocation")
-            st.info("""
-            **Ideal Budget Allocation (50/30/20 rule)**:
-            - 50% Needs (Housing, Food, Transport)
-            - 30% Wants (Entertainment, Dining Out)
-            - 20% Savings & Debt
-            """)
-        else:
-            st.info("No category data available")
-    
+        _render_allocation_tab(allocation)
     with tab4:
-        st.markdown("### 📈 Spending Trends")
-        
-        # Monthly trend
-        df_trend = df.copy()
-        df_trend[Columns.DATE] = pd.to_datetime(df_trend[Columns.DATE], errors="coerce")
-        df_trend[Columns.PRICE_PAID] = pd.to_numeric(df_trend[Columns.PRICE_PAID], errors="coerce")
-        df_trend[Columns.YEAR_MONTH] = df_trend[Columns.DATE].dt.to_period("M")
-        
-        monthly_trend = df_trend.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID].sum().reset_index()
-        monthly_trend.columns = ["Month", "Spending"]
-        monthly_trend["Month"] = monthly_trend["Month"].astype(str)
-        
-        # Add moving average
-        monthly_trend["3-Month MA"] = monthly_trend["Spending"].rolling(window=3).mean()
-        
-        fig_trend = go.Figure()
-        
-        fig_trend.add_trace(go.Bar(
-            x=monthly_trend["Month"],
-            y=monthly_trend["Spending"],
-            name="Monthly Spending",
-            marker_color='#667eea'
-        ))
-        
-        fig_trend.add_trace(go.Scatter(
-            x=monthly_trend["Month"],
-            y=monthly_trend["3-Month MA"],
-            name="3-Month Average",
-            line=dict(color='#ef4444', width=2, dash='dash')
-        ))
-        
-        if monthly_income > 0:
-            fig_trend.add_hline(
-                y=monthly_income,
-                line_dash="dot",
-                line_color="green",
-                annotation_text="Income"
-            )
-        
-        fig_trend.update_layout(
-            title="Monthly Spending Trend",
-            xaxis_title="Month",
-            yaxis_title="Spending (SEK)",
-            height=400,
-            hovermode='x unified'
-        )
-        
-        st.plotly_chart(fig_trend)
-        
-        # Growth rate
-        if len(monthly_trend) >= 2:
-            latest_spending = monthly_trend.iloc[-1]["Spending"]
-            previous_spending = monthly_trend.iloc[-2]["Spending"]
-            growth_rate = ((latest_spending - previous_spending) / previous_spending * 100) if previous_spending > 0 else 0
-            
-            col_g1, col_g2 = st.columns(2)
-            col_g1.metric(
-                "Month-over-Month Growth",
-                f"{growth_rate:+.1f}%",
-                delta=f"{latest_spending - previous_spending:+,.0f} SEK",
-                delta_color="inverse"
-            )
-            
-            # Year-over-year if available
-            if len(monthly_trend) >= 12:
-                yoy_growth = ((latest_spending - monthly_trend.iloc[-13]["Spending"]) / monthly_trend.iloc[-13]["Spending"] * 100)
-                col_g2.metric(
-                    "Year-over-Year Growth",
-                    f"{yoy_growth:+.1f}%",
-                    delta_color="inverse"
-                )
+        _render_trends_tab(df, monthly_income)
 
     # ── AI financial health explanation ──────────────────────────────────────
     ai_financial_explanation(df, monthly_income)
@@ -564,9 +606,9 @@ def ai_financial_explanation(df: pd.DataFrame, monthly_income: float = 0) -> Non
         df2 = df.copy()
         df2["Date"] = pd.to_datetime(df2.get("Date", pd.Series()), errors="coerce")
         df2["PricePaid"] = pd.to_numeric(df2.get("PricePaid", pd.Series()), errors="coerce").fillna(0)
-        df2["YM"] = df2["Date"].dt.to_period("M").astype(str)
+        df2[Columns.YEAR_MONTH] = df2["Date"].dt.to_period("M").astype(str)
 
-        monthly = df2.groupby("YM")["PricePaid"].sum().tail(6)
+        monthly = df2.groupby(Columns.YEAR_MONTH)["PricePaid"].sum().tail(6)
         avg_mo   = float(monthly.mean()) if not monthly.empty else 0
         this_mo  = float(monthly.iloc[-1]) if not monthly.empty else 0
         savings  = monthly_income - this_mo if monthly_income > 0 else None
@@ -620,16 +662,9 @@ def ai_financial_explanation(df: pd.DataFrame, monthly_income: float = 0) -> Non
         f"<li style='margin-bottom:0.45rem;'>{b}</li>" for b in bullets
     ) or f"<li>{text}</li>"
 
-    st.markdown(
-        f"<div style='background:#f8fafc;border:1px solid #e2e8f0;"
-        f"border-left:4px solid #6366f1;border-radius:12px;"
-        f"padding:1.1rem 1.4rem;'>"
+    body = (
         f"<ul style='margin:0;padding-left:1.2rem;font-size:0.9rem;"
         f"line-height:1.75;color:#0f172a;'>{items_html}</ul>"
-        f"<div style='margin-top:0.5rem;font-size:0.7rem;color:#94a3b8;'>"
-        f"Generated by {provider}</div></div>",
-        unsafe_allow_html=True,
     )
-    if st.button("🔄 Refresh", key="refresh_fin_ai"):
-        st.session_state.pop(cache_key, None)
-        st.rerun()
+    from page_helpers import render_ai_card
+    render_ai_card(body, provider, cache_key=cache_key, refresh_key="refresh_fin_ai")

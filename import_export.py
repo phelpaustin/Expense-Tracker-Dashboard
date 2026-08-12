@@ -4,6 +4,11 @@ import pandas as pd
 from io import BytesIO
 from config import ImportState, ImportStateManager
 from validators import ExpenseValidator
+from security_utils import (
+    sanitize_df_for_export,
+    validate_upload,
+    UploadValidationError,
+)
 
 
 # ============================================================
@@ -88,10 +93,22 @@ def _handle_file_upload(existing_columns):
     
     # Read file
     try:
+        validate_upload(uploaded_file, max_mb=25, allowed_ext=(".csv", ".xlsx", ".xls"))
         if uploaded_file.name.endswith(".csv"):
             df_import = pd.read_csv(uploaded_file)
         else:
             df_import = pd.read_excel(uploaded_file)
+        # Normalise foreign-currency rows to the base currency (imports bypass
+        # the entry form's conversion) so downstream totals stay correct.
+        try:
+            from currency_manager import normalize_currency_to_base
+            df_import = normalize_currency_to_base(df_import)
+        except Exception:  # noqa: BLE001 – normalisation is best-effort
+            pass
+    except UploadValidationError as e:
+        ImportStateManager.set_state(ImportState.ERROR, str(e))
+        st.rerun()
+        return
     except Exception as e:
         ImportStateManager.set_state(
             ImportState.ERROR,
@@ -323,6 +340,9 @@ def export_buttons(df):
     """Provide buttons to export filtered or full dataset."""
     st.sidebar.markdown("---")
     st.sidebar.subheader("📤 Export Data")
+
+    # Neutralise spreadsheet formula injection in downloadable files.
+    df = sanitize_df_for_export(df)
 
     # --- CSV Export ---
     csv_data = df.to_csv(index=False).encode("utf-8")

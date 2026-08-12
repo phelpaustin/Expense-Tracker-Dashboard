@@ -52,12 +52,27 @@ except ImportError:
 
 # ── Recurring ──────────────────────────────────────────────────
 try:
-    from recurring_manager import recurring_manager_ui  # noqa: F401
+    from recurring_manager import recurring_manager_ui, auto_apply_due_templates  # noqa: F401
     HAS_RECURRING = True
 except ImportError:
     HAS_RECURRING = False
     recurring_manager_ui = None
+    def auto_apply_due_templates(df, save_fn, sheet=None): return df, []
+# ── Income ledger ──────────────────────────────
+try:
+    from income_manager import income_manager_ui  # noqa: F401
+    HAS_INCOME = True
+except ImportError:
+    HAS_INCOME = False
+    income_manager_ui = None
 
+# ── Accounts / net worth ───────────────────────
+try:
+    from accounts_manager import accounts_manager_ui  # noqa: F401
+    HAS_ACCOUNTS = True
+except ImportError:
+    HAS_ACCOUNTS = False
+    accounts_manager_ui = None
 # ── Advanced analytics ─────────────────────────────────────────
 try:
     from analytics_advanced import (              # noqa: F401
@@ -145,3 +160,39 @@ try:
     HAS_TRIPS = True
 except ImportError:
     HAS_TRIPS = False
+
+# ── Pending Bills (total-bill entry, itemise later) ────────────
+try:
+    import pending_bills  # noqa: F401 – confirms module present
+    HAS_PENDING_BILLS = True
+except ImportError:
+    HAS_PENDING_BILLS = False
+# ── Bills Ledger (consolidated shop / date / amount view) ────
+try:
+    import bills_ledger  # noqa: F401 – confirms module present
+    HAS_BILLS_LEDGER = True
+except ImportError:
+    HAS_BILLS_LEDGER = False
+# ── AI Insights ────────────────────────────────────────────────
+try:
+    from ai_insights import ai_chat_ui   # noqa: F401
+    HAS_AI = True
+except ImportError:
+    HAS_AI = False
+    ai_chat_ui = None
+
+# ── Modern UI: animated metric cards (streamlit-extras) ────────
+try:
+    from streamlit_extras.metric_cards import style_metric_cards  # noqa: F401
+    HAS_EXTRAS = True
+except ImportError:
+    HAS_EXTRAS = False
+    style_metric_cards = None
+
+# ── Modern UI: Lottie animations (streamlit-lottie) ────────────
+try:
+    from streamlit_lottie import st_lottie        # noqa: F401
+    HAS_LOTTIE = True
+except ImportError:
+    HAS_LOTTIE = False
+    st_lottie = None

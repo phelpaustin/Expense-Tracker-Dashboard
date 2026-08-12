@@ -23,6 +23,8 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
+import streamlit as st
+
 # ── Storage path ───────────────────────────────────────────────
 _TRIPS_FILE = os.path.join("data", "trips.json")
 
@@ -131,9 +133,19 @@ def _new_id() -> str:
 #  GOOGLE SHEETS SYNC
 # ═══════════════════════════════════════════════════════════════
 
-# Module-level state — set once per session via init_gsheets()
-_spreadsheet         = None
-_synced_from_gsheets = False
+# Per-session state — stored in st.session_state so concurrent users in the
+# same Streamlit server process never share one another's GSheets connection.
+_SPREADSHEET_KEY = "_trips_spreadsheet"
+_SYNCED_KEY      = "_trips_synced_from_gsheets"
+
+
+def _get_spreadsheet():
+    return st.session_state.get(_SPREADSHEET_KEY)
+
+
+def _set_spreadsheet(value) -> None:
+    st.session_state[_SPREADSHEET_KEY] = value
+
 
 TRIPS_WS_NAME    = "Trips"
 EXPENSES_WS_NAME = "TripExpenses"
@@ -157,29 +169,28 @@ def init_gsheets(sheet) -> None:
     so all reads stay fast.  Every subsequent _save_raw() call will also
     write back to Google Sheets automatically.
     """
-    global _spreadsheet, _synced_from_gsheets
     if sheet is None:
         return
     try:
-        _spreadsheet = sheet.spreadsheet          # worksheet  →  spreadsheet
-        if not _synced_from_gsheets:
+        _set_spreadsheet(sheet.spreadsheet)       # worksheet  →  spreadsheet
+        if not st.session_state.get(_SYNCED_KEY, False):
             _pull_from_gsheets()                  # one-time startup sync
-            _synced_from_gsheets = True
+            st.session_state[_SYNCED_KEY] = True
     except Exception as exc:
         print(f"[trips_manager] GSheets init failed: {exc}")
-        _spreadsheet = None
+        _set_spreadsheet(None)
 
 
 def _get_or_create_ws(name: str, headers: list):
     """Return a worksheet by name, creating it (with header row) if missing."""
-    global _spreadsheet
-    if _spreadsheet is None:
+    spreadsheet = _get_spreadsheet()
+    if spreadsheet is None:
         return None
     try:
         try:
-            return _spreadsheet.worksheet(name)
+            return spreadsheet.worksheet(name)
         except Exception:
-            ws = _spreadsheet.add_worksheet(
+            ws = spreadsheet.add_worksheet(
                 title=name, rows=1000, cols=len(headers)
             )
             ws.append_row(headers)
@@ -187,6 +198,7 @@ def _get_or_create_ws(name: str, headers: list):
     except Exception as exc:
         print(f"[trips_manager] Could not get/create worksheet '{name}': {exc}")
         return None
+
 
 
 def _load_from_gsheets() -> dict[str, Any] | None:
@@ -275,7 +287,7 @@ def _save_raw(data: dict[str, Any]) -> None:
     os.makedirs("data", exist_ok=True)
     with open(_TRIPS_FILE, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, default=str)
-    if _spreadsheet is not None:
+    if _get_spreadsheet() is not None:
         _save_to_gsheets(data)
 
 

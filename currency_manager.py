@@ -3,10 +3,11 @@
 Currency conversion with robust error handling and multiple fallback strategies.
 """
 import requests
+import pandas as pd
 import streamlit as st
 from typing import Tuple, Optional, Dict
 from datetime import datetime, timedelta
-from config import CACHE_TTL_LONG, SUPPORTED_CURRENCIES
+from config import CACHE_TTL_LONG, SUPPORTED_CURRENCIES, DEFAULT_CURRENCY, Columns
 from error_handler import (
     NetworkErrorHandler,
     ErrorHandler,
@@ -14,41 +15,6 @@ from error_handler import (
     handle_errors,
     logger
 )
-
-
-# ============================================================
-# EXCHANGE RATE CACHE
-# ============================================================
-class ExchangeRateCache:
-    """Simple in-memory cache for exchange rates."""
-    
-    _cache: Dict[str, Tuple[float, datetime]] = {}
-    _cache_duration = timedelta(hours=1)
-    
-    @classmethod
-    def get(cls, key: str) -> Optional[float]:
-        """Get cached rate if not expired."""
-        if key in cls._cache:
-            rate, timestamp = cls._cache[key]
-            if datetime.now() - timestamp < cls._cache_duration:
-                logger.debug(f"Using cached rate for {key}: {rate}")
-                return rate
-            else:
-                logger.debug(f"Cache expired for {key}")
-                del cls._cache[key]
-        return None
-    
-    @classmethod
-    def set(cls, key: str, rate: float):
-        """Cache exchange rate."""
-        cls._cache[key] = (rate, datetime.now())
-        logger.debug(f"Cached rate for {key}: {rate}")
-    
-    @classmethod
-    def clear(cls):
-        """Clear all cached rates."""
-        cls._cache.clear()
-        logger.info("Exchange rate cache cleared")
 
 
 # ============================================================
@@ -164,7 +130,10 @@ class FallbackRates:
     Fallback exchange rates for when API is unavailable.
     Updated periodically (these are approximate rates as of early 2024).
     """
-    
+
+    # Human-readable date these hardcoded rates were last reviewed.
+    LAST_UPDATED = "early 2024"
+
     RATES = {
         ("INR", "SEK"): 0.12,   # 1 INR ≈ 0.12 SEK
         ("SEK", "INR"): 8.33,   # 1 SEK ≈ 8.33 INR
@@ -176,6 +145,18 @@ class FallbackRates:
         ("INR", "USD"): 0.012,  # 1 INR ≈ 0.012 USD
         ("EUR", "USD"): 1.08,   # 1 EUR ≈ 1.08 USD
         ("USD", "EUR"): 0.93,   # 1 USD ≈ 0.93 EUR
+        # ── Additional currencies (rates vs SEK, inverse handled automatically) ──
+        ("GBP", "SEK"): 13.30,  # 1 GBP ≈ 13.30 SEK
+        ("JPY", "SEK"): 0.070,  # 1 JPY ≈ 0.070 SEK
+        ("CHF", "SEK"): 11.90,  # 1 CHF ≈ 11.90 SEK
+        ("AUD", "SEK"): 6.95,   # 1 AUD ≈ 6.95 SEK
+        ("CAD", "SEK"): 7.70,   # 1 CAD ≈ 7.70 SEK
+        ("CNY", "SEK"): 1.45,   # 1 CNY ≈ 1.45 SEK
+        ("THB", "SEK"): 0.29,   # 1 THB ≈ 0.29 SEK
+        ("SGD", "SEK"): 7.80,   # 1 SGD ≈ 7.80 SEK
+        ("AED", "SEK"): 2.86,   # 1 AED ≈ 2.86 SEK
+        ("NOK", "SEK"): 0.97,   # 1 NOK ≈ 0.97 SEK
+        ("DKK", "SEK"): 1.54,   # 1 DKK ≈ 1.54 SEK
     }
     
     @classmethod
@@ -200,20 +181,21 @@ class FallbackRates:
 # ============================================================
 # MAIN EXCHANGE RATE FUNCTION
 # ============================================================
-@st.cache_data(ttl=CACHE_TTL_LONG, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_LONG, show_spinner=False, max_entries=64)
 def get_exchange_rate(
     base: str = "INR",
     target: str = "SEK",
-    use_cache: bool = True,
     use_fallback: bool = True
 ) -> Tuple[Optional[float], Optional[str]]:
     """
     Get exchange rate with comprehensive error handling and fallback strategies.
+
+    Results are cached by Streamlit via @st.cache_data (TTL = CACHE_TTL_LONG);
+    call refresh_exchange_rates() to force a fresh fetch.
     
     Args:
         base: Base currency code (e.g., "INR")
         target: Target currency code (e.g., "SEK")
-        use_cache: Whether to use cached rates
         use_fallback: Whether to use fallback rates on API failure
     
     Returns:
@@ -237,28 +219,21 @@ def get_exchange_rate(
     if base == target:
         return 1.0, None
     
-    # Check cache first
-    if use_cache:
-        cache_key = f"{base}_{target}"
-        cached_rate = ExchangeRateCache.get(cache_key)
-        if cached_rate is not None:
-            return cached_rate, None
-    
     # Try to get rate from API
     provider = ExchangeRateHostProvider()
     rate, error = provider.get_rate(base, target)
     
     if rate is not None:
-        # Success - cache the rate
-        if use_cache:
-            ExchangeRateCache.set(cache_key, rate)
         return rate, None
     
     # API failed - try fallback
     if use_fallback:
         fallback_rate = FallbackRates.get(base, target)
         if fallback_rate is not None:
-            warning_msg = f"Using approximate fallback rate (API unavailable: {error})"
+            warning_msg = (
+                f"Using approximate fallback rate from {FallbackRates.LAST_UPDATED} "
+                f"— may be out of date (API unavailable: {error})"
+            )
             logger.warning(warning_msg)
             return fallback_rate, warning_msg
     
@@ -307,6 +282,56 @@ def convert_amount(
         return None, error_msg
 
 
+def normalize_currency_to_base(
+    df: "pd.DataFrame",
+    base: str = DEFAULT_CURRENCY,
+) -> "pd.DataFrame":
+    """
+    Return a copy of *df* whose amounts are all expressed in a single *base*
+    currency.
+
+    For every row whose ``Currency`` differs from *base*, ``PricePaid`` (and
+    ``PricePerUnit`` when present) is multiplied by the current exchange rate
+    and the ``Currency`` cell is rewritten to *base*. Rows already in *base*
+    (or with an unknown currency) are left untouched. Establishing this
+    single-base-currency invariant is what makes the downstream ``.sum()``
+    totals — which previously added raw amounts across currencies — correct.
+
+    Conversion uses the cached :func:`get_exchange_rate`, so this performs at
+    most one network call per distinct foreign currency.
+    """
+    if df is None or df.empty:
+        return df
+    if Columns.CURRENCY not in df.columns or Columns.PRICE_PAID not in df.columns:
+        return df
+
+    out = df.copy()
+    currencies = (
+        out[Columns.CURRENCY].fillna(base).astype(str).str.strip().str.upper()
+    )
+    price = pd.to_numeric(out[Columns.PRICE_PAID], errors="coerce")
+    ppu = (
+        pd.to_numeric(out[Columns.PRICE_PER_UNIT], errors="coerce")
+        if Columns.PRICE_PER_UNIT in out.columns
+        else None
+    )
+
+    for code in currencies.unique():
+        if code == base or code not in SUPPORTED_CURRENCIES:
+            continue
+        rate, _ = get_exchange_rate(code, base)
+        if not rate:
+            logger.warning(f"Skipping normalisation for {code}: no rate available")
+            continue
+        mask = currencies == code
+        out.loc[mask, Columns.PRICE_PAID] = (price[mask] * rate).round(2)
+        if ppu is not None:
+            out.loc[mask, Columns.PRICE_PER_UNIT] = (ppu[mask] * rate).round(2)
+
+    out[Columns.CURRENCY] = base
+    return out
+
+
 def get_rate_with_ui_feedback(base: str, target: str) -> float:
     """
     Get exchange rate with automatic UI feedback in Streamlit.
@@ -347,8 +372,7 @@ def get_rate_with_ui_feedback(base: str, target: str) -> float:
 
 def refresh_exchange_rates():
     """Force refresh of all cached exchange rates."""
-    ExchangeRateCache.clear()
-    st.cache_data.clear()
+    get_exchange_rate.clear()
     logger.info("Exchange rates refreshed")
 
 
@@ -393,9 +417,9 @@ def show_exchange_rate_widget(base: str = "INR", target: str = "SEK"):
 __all__ = [
     "get_exchange_rate",
     "convert_amount",
+    "normalize_currency_to_base",
     "get_rate_with_ui_feedback",
     "refresh_exchange_rates",
     "show_exchange_rate_widget",
-    "ExchangeRateCache",
     "FallbackRates",
 ]

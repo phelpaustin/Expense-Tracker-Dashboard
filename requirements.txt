@@ -5,12 +5,24 @@ pandas
 numpy
 openpyxl
 
+# ── Modern UI (optional — animated cards & Lottie) ──
+streamlit-extras
+streamlit-lottie
+
 # ── Google Sheets integration ─────────────────
 gspread
 oauth2client
 
+# ── Google Drive (receipt uploads for pending bills) ──
+google-api-python-client
+google-auth
+google-auth-oauthlib
+
 # ── Currency conversion ───────────────────────
 requests
+
+# ── Environment config (.env loading) ─────────
+python-dotenv
 
 # ── Data validation ───────────────────────────
 pydantic>=2.0
@@ -21,12 +33,29 @@ statsmodels
 # ── ML categorization (optional) ─────────────
 scikit-learn
 
+# ── Charts: gradient-styled tables (Price Tracker) ──
+# pandas Styler.background_gradient(cmap=...) requires matplotlib
+matplotlib
+
+# ── AI Insights & AI receipt scanning (optional) ──
+# Provider cascade: Claude (anthropic) → GPT-4o (openai) → Gemini (via requests)
+anthropic
+openai
+
 # ── Receipt OCR (optional) ────────────────────
 # Pillow and pytesseract require Tesseract binary:
 # macOS:   brew install tesseract
 # Ubuntu:  sudo apt install tesseract-ocr
 Pillow
 pytesseract
+
+# ── PDF receipts (optional) ───────────────────
+# PyMuPDF (imported as `fitz`) is the preferred PDF→image converter.
+# pdf2image is the fallback and additionally requires the poppler binary:
+# macOS:   brew install poppler
+# Ubuntu:  sudo apt install poppler-utils
+PyMuPDF
+pdf2image
 
 # ── Testing ───────────────────────────────────
 pytest

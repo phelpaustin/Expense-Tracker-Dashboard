@@ -11,6 +11,8 @@ import streamlit as st
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from security_utils import sanitize_df_for_export
+
 
 BACKUP_DIR = Path("data/backups")
 MAX_BACKUPS = 10  # Keep last N backups
@@ -58,14 +60,14 @@ def restore_backup(backup_path: str) -> pd.DataFrame:
 
 def export_backup_bytes(df: pd.DataFrame) -> bytes:
     """Return CSV as bytes for download button."""
-    return df.to_csv(index=False).encode("utf-8")
+    return sanitize_df_for_export(df).to_csv(index=False).encode("utf-8")
 
 
 def export_backup_excel(df: pd.DataFrame) -> bytes:
     """Return Excel bytes for download."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Expenses")
+        sanitize_df_for_export(df).to_excel(writer, index=False, sheet_name="Expenses")
     return output.getvalue()
 
 
@@ -79,6 +81,54 @@ def backup_settings_ui(df: pd.DataFrame, save_fn, sheet=None):
     col1.metric("Saved Backups", len(backups))
     col2.metric("Total Rows", len(df))
     col3.metric("Max Retained", MAX_BACKUPS)
+
+    # ── Cloud Sync ─────────────────────────────────────────────────────
+    st.markdown("### ☁️ Cloud Sync")
+    try:
+        from settings_manager import load_sync_settings, save_sync_settings
+        import data_sync
+
+        sync_cfg = load_sync_settings()
+        mode_labels = {
+            "every_save": "Every save",
+            "daily": "Once a day",
+            "manual": "Manual only",
+        }
+        modes = list(mode_labels.keys())
+        current_mode = sync_cfg.get("backup_sync_mode", "daily")
+        sc1, sc2 = st.columns([2, 1])
+        with sc1:
+            selected = st.selectbox(
+                "Auto-sync snapshots to Google Drive",
+                modes,
+                index=modes.index(current_mode) if current_mode in modes else 1,
+                format_func=lambda m: mode_labels[m],
+                help="How often local snapshots are mirrored to your shared "
+                     "Drive folder. 'Manual only' disables automatic pushes.",
+            )
+            if selected != current_mode:
+                sync_cfg["backup_sync_mode"] = selected
+                save_sync_settings(sync_cfg)
+                st.toast("Cloud sync mode updated", icon="✅")
+        with sc2:
+            st.caption(
+                f"Last Drive sync:\n\n**{sync_cfg.get('last_backup_sync') or 'never'}**"
+            )
+
+        if st.button("☁️ Sync to Drive now", type="primary", width="stretch"):
+            with st.spinner("Syncing to Google Drive…"):
+                res = data_sync.sync_now(df, sheet)
+            if res.get("snapshot") or res.get("managed_pushed") or res.get("backups_pulled"):
+                st.success(
+                    f"✅ Synced — snapshot pushed: {res['snapshot']}, "
+                    f"settings files: {res['managed_pushed']}, "
+                    f"backups pulled: {res['backups_pulled']}."
+                )
+                st.rerun()
+            else:
+                st.warning("Drive sync unavailable or nothing to sync yet.")
+    except Exception as e:  # noqa: BLE001 – cloud sync is optional
+        st.caption(f"Cloud sync unavailable: {e}")
 
     # Manual backup trigger
     st.markdown("### 📤 Create Backup")

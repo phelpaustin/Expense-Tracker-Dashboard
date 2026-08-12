@@ -4,6 +4,7 @@ Centralized error handling and logging for the Expense Tracker.
 Provides consistent error handling patterns across the application.
 """
 import logging
+import os
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -15,28 +16,58 @@ import streamlit as st
 # ============================================================
 # LOGGING CONFIGURATION
 # ============================================================
+def _resolve_level(env_var: str, default: int) -> int:
+    """Read a log level name from an env var (e.g. 'WARNING'); fall back to default."""
+    name = os.getenv(env_var)
+    if name:
+        return getattr(logging, name.strip().upper(), default)
+    return default
+
+
 def setup_logging(log_file: str = "logs/expense_tracker.log", level: int = logging.INFO):
     """
-    Setup application logging.
-    
+    Setup application logging with independent file and console levels.
+
+    The log FILE keeps full detail (INFO by default) for debugging, while the
+    CONSOLE stays quiet (WARNING by default) so routine startup/sync messages
+    don't clutter the terminal. Override either with environment variables:
+
+        EXPENSE_LOG_LEVEL          → file level        (default INFO)
+        EXPENSE_CONSOLE_LOG_LEVEL  → console level     (default WARNING)
+
+    e.g. ``EXPENSE_CONSOLE_LOG_LEVEL=INFO`` to see everything on the console
+    again, or ``EXPENSE_CONSOLE_LOG_LEVEL=ERROR`` for near-silence.
+
     Args:
         log_file: Path to log file
-        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        level: Default file logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     """
     # Create logs directory if it doesn't exist
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Configure logging
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()  # Also log to console
-        ]
-    )
-    
+
+    file_level = _resolve_level("EXPENSE_LOG_LEVEL", level)
+    console_level = _resolve_level("EXPENSE_CONSOLE_LOG_LEVEL", logging.WARNING)
+
+    fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(file_level)
+    file_handler.setFormatter(fmt)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(fmt)
+
+    root = logging.getLogger()
+    # Root must pass through the most permissive of the two handler levels.
+    root.setLevel(min(file_level, console_level))
+    # Replace any existing handlers so re-imports don't duplicate output.
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+
     return logging.getLogger(__name__)
 
 

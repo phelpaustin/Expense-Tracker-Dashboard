@@ -41,6 +41,26 @@ def sample_expense_data():
 
 
 @pytest.fixture
+def sample_validator_kwargs():
+    """
+    Sample kwargs matching ExpenseValidator.validate_expense_item's signature.
+
+    Note: the validator uses different parameter names than the ExpenseItem
+    Pydantic model (``price``/``date_value`` vs ``price_paid``/``date`` and no
+    ``shop``), so the two cannot share a single fixture.
+    """
+    return {
+        "item": "Milk",
+        "price": 25.50,
+        "quantity": 1.0,
+        "date_value": date(2024, 1, 15),
+        "expense_type": "Goods",
+        "currency": "SEK",
+        "category": "Groceries",
+    }
+
+
+@pytest.fixture
 def sample_dataframe():
     """Sample DataFrame for testing."""
     return pd.DataFrame({
@@ -61,37 +81,37 @@ def sample_dataframe():
 class TestValidators:
     """Test validation functions."""
     
-    def test_valid_expense_item(self, sample_expense_data):
+    def test_valid_expense_item(self, sample_validator_kwargs):
         """Test validation of valid expense."""
-        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_expense_data)
+        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_validator_kwargs)
         assert is_valid is True
         assert len(errors) == 0
     
-    def test_empty_item_name(self, sample_expense_data):
+    def test_empty_item_name(self, sample_validator_kwargs):
         """Test validation fails for empty item name."""
-        sample_expense_data["item"] = ""
-        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_expense_data)
+        sample_validator_kwargs["item"] = ""
+        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_validator_kwargs)
         assert is_valid is False
         assert any("item" in error.lower() for error in errors)
     
-    def test_zero_price(self, sample_expense_data):
+    def test_zero_price(self, sample_validator_kwargs):
         """Test validation fails for zero price."""
-        sample_expense_data["price"] = 0.0
-        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_expense_data)
+        sample_validator_kwargs["price"] = 0.0
+        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_validator_kwargs)
         assert is_valid is False
         assert any("price" in error.lower() for error in errors)
     
-    def test_negative_quantity(self, sample_expense_data):
+    def test_negative_quantity(self, sample_validator_kwargs):
         """Test validation fails for negative quantity."""
-        sample_expense_data["quantity"] = -1.0
-        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_expense_data)
+        sample_validator_kwargs["quantity"] = -1.0
+        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_validator_kwargs)
         assert is_valid is False
         assert any("quantity" in error.lower() or "negative" in error.lower() for error in errors)
     
-    def test_future_date(self, sample_expense_data):
+    def test_future_date(self, sample_validator_kwargs):
         """Test validation warns for future date."""
-        sample_expense_data["date_value"] = date.today() + timedelta(days=1)
-        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_expense_data)
+        sample_validator_kwargs["date_value"] = date.today() + timedelta(days=1)
+        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_validator_kwargs)
         assert is_valid is False
         assert any("future" in error.lower() for error in errors)
     
@@ -218,7 +238,9 @@ class TestModels:
     
     def test_validate_expense_dict(self, sample_expense_data):
         """Test dictionary validation."""
-        result = validate_expense_dict(sample_expense_data)
+        # validate_expense_dict expects DataFrame-style (capitalized) keys.
+        df_row = ExpenseItem(**sample_expense_data).to_dict()
+        result = validate_expense_dict(df_row)
         assert result.is_valid is True
         assert len(result.errors) == 0
 
@@ -256,10 +278,10 @@ class TestErrorHandling:
 class TestIntegration:
     """Integration tests for complete workflows."""
     
-    def test_add_expense_workflow(self, sample_expense_data):
+    def test_add_expense_workflow(self, sample_expense_data, sample_validator_kwargs):
         """Test complete add expense workflow."""
         # 1. Validate data
-        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_expense_data)
+        is_valid, errors = ExpenseValidator.validate_expense_item(**sample_validator_kwargs)
         assert is_valid
         
         # 2. Create model
@@ -343,7 +365,7 @@ class TestEdgeCases:
     def test_maximum_price(self):
         """Test maximum allowed price."""
         data = {
-            "date": date.today(),
+            "date_value": date.today(),
             "expense_type": "Goods",
             "item": "Expensive Item",
             "price": ExpenseValidator.MAX_PRICE,
@@ -355,7 +377,7 @@ class TestEdgeCases:
     def test_minimum_quantity(self):
         """Test minimum allowed quantity."""
         data = {
-            "date": date.today(),
+            "date_value": date.today(),
             "expense_type": "Goods",
             "item": "Small Item",
             "price": 10.0,
@@ -363,6 +385,91 @@ class TestEdgeCases:
         }
         is_valid, errors = ExpenseValidator.validate_expense_item(**data)
         assert is_valid
+
+
+# ============================================================
+# BILLS LEDGER
+# ============================================================
+import bills_ledger as bl
+
+
+class TestBillsLedger:
+    """Tests for the Bills Ledger projection + de-duplication."""
+
+    def test_norm_date_variants(self):
+        assert bl._norm_date("2026-06-20") == "2026-06-20"
+        assert bl._norm_date(date(2026, 6, 20)) == "2026-06-20"
+        assert bl._norm_date(datetime(2026, 6, 20, 9, 30)) == "2026-06-20"
+        assert bl._norm_date("") == ""
+
+    def test_dedup_key_is_normalised(self):
+        # Same bill written slightly differently must share a key.
+        a = bl._dedup_key("2026-06-20", "  ICA Maxi ", 742.5)
+        b = bl._dedup_key(date(2026, 6, 20), "ica maxi", 742.50)
+        assert a == b
+
+    def test_expense_rows_group_by_shop_and_date(self):
+        df = pd.DataFrame({
+            "Date": ["2026-06-20", "2026-06-20", "2026-06-21"],
+            "Shop": ["ICA", "ICA", "Lidl"],
+            "PricePaid": [10.0, 15.0, 20.0],
+            "Currency": ["SEK", "SEK", "SEK"],
+        })
+        rows = bl._expense_rows(df)
+        by_key = {(r[bl.LEDGER_DATE], r[bl.LEDGER_SHOP]): r[bl.LEDGER_AMOUNT] for r in rows}
+        assert by_key[("2026-06-20", "ICA")] == 25.0
+        assert by_key[("2026-06-21", "Lidl")] == 20.0
+        assert all(r[bl.LEDGER_SOURCE] == bl.SOURCE_EXPENSE for r in rows)
+
+    def test_expense_rows_empty_df(self):
+        assert bl._expense_rows(pd.DataFrame()) == []
+
+    def test_build_ledger_dedup_prefers_expense(self, monkeypatch):
+        # An expense and a manual entry describing the same bill collapse
+        # into a single row, keeping the higher-priority Expense source.
+        df = pd.DataFrame({
+            "Date": ["2026-06-20"],
+            "Shop": ["ICA"],
+            "PricePaid": [25.0],
+            "Currency": ["SEK"],
+        })
+        monkeypatch.setattr(bl, "_pending_rows", lambda: [])
+        monkeypatch.setattr(bl, "_manual_rows", lambda: [{
+            bl.LEDGER_DATE: "2026-06-20", bl.LEDGER_SHOP: "ica",
+            bl.LEDGER_AMOUNT: 25.0, bl.LEDGER_CURRENCY: "SEK",
+            bl.LEDGER_SOURCE: bl.SOURCE_MANUAL,
+            "ledger_id": "x1", "note": "",
+        }])
+        led = bl.build_ledger(df)
+        assert len(led) == 1
+        assert led.iloc[0][bl.LEDGER_SOURCE] == bl.SOURCE_EXPENSE
+
+    def test_build_ledger_keeps_distinct_amounts(self, monkeypatch):
+        # Same shop + date but different amounts are two distinct bills.
+        df = pd.DataFrame(columns=["Date", "Shop", "PricePaid", "Currency"])
+        monkeypatch.setattr(bl, "_pending_rows", lambda: [])
+        monkeypatch.setattr(bl, "_manual_rows", lambda: [
+            {bl.LEDGER_DATE: "2026-06-20", bl.LEDGER_SHOP: "ICA",
+             bl.LEDGER_AMOUNT: 25.0, bl.LEDGER_CURRENCY: "SEK",
+             bl.LEDGER_SOURCE: bl.SOURCE_MANUAL, "ledger_id": "a", "note": ""},
+            {bl.LEDGER_DATE: "2026-06-20", bl.LEDGER_SHOP: "ICA",
+             bl.LEDGER_AMOUNT: 40.0, bl.LEDGER_CURRENCY: "SEK",
+             bl.LEDGER_SOURCE: bl.SOURCE_MANUAL, "ledger_id": "b", "note": ""},
+        ])
+        led = bl.build_ledger(df)
+        assert len(led) == 2
+
+    def test_manual_duplicate_detection(self, monkeypatch):
+        df = pd.DataFrame({
+            "Date": ["2026-06-20"],
+            "Shop": ["ICA"],
+            "PricePaid": [25.0],
+            "Currency": ["SEK"],
+        })
+        monkeypatch.setattr(bl, "_pending_rows", lambda: [])
+        monkeypatch.setattr(bl, "_manual_rows", lambda: [])
+        assert bl.manual_duplicate_exists("2026-06-20", "ica", 25.0, df=df) == bl.SOURCE_EXPENSE
+        assert bl.manual_duplicate_exists("2000-01-01", "Nowhere", 1.0, df=df) is None
 
 
 # ============================================================

@@ -12,12 +12,10 @@ except Exception:
     HAS_STATS = False
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=16)
 def monthly_agg_for_forecast(df):
-    df2 = df.copy()
-    df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
-    df2 = df2.dropna(subset=[Columns.DATE])
-    df2[Columns.YEAR_MONTH] = df2[Columns.DATE].dt.to_period("M").astype(str)
+    from utils import prepare_expense_df
+    df2 = prepare_expense_df(df, numeric_price=False)
     monthly = (
         df2.groupby(Columns.YEAR_MONTH)[Columns.PRICE_PAID]
         .sum().reset_index().sort_values(Columns.YEAR_MONTH)
@@ -28,7 +26,8 @@ def monthly_agg_for_forecast(df):
 def monthly_trends(df):
     st.subheader("📈 Expense Trends & Forecasts")
     if df.empty:
-        st.info("No data to display.")
+        from page_helpers import empty_state
+        empty_state("No data to display yet. Add expenses to see trends.")
         return
 
     monthly = monthly_agg_for_forecast(df)

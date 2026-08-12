@@ -10,6 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 from config import Columns
+from security_utils import sanitize_df_for_export
 
 
 # ============================================================
@@ -91,19 +92,19 @@ def build_excel_report(report: dict) -> bytes:
 
         # All expenses
         if "full_df" in report and not report["full_df"].empty:
-            report["full_df"].to_excel(writer, sheet_name="All Expenses", index=False)
+            sanitize_df_for_export(report["full_df"]).to_excel(writer, sheet_name="All Expenses", index=False)
 
         # Deductible expenses
         if "deductible_df" in report and not report["deductible_df"].empty:
-            report["deductible_df"].to_excel(writer, sheet_name="Deductible Expenses", index=False)
+            sanitize_df_for_export(report["deductible_df"]).to_excel(writer, sheet_name="Deductible Expenses", index=False)
 
         # Category breakdown
         if "categories_df" in report and not report["categories_df"].empty:
-            report["categories_df"].to_excel(writer, sheet_name="By Category", index=False)
+            sanitize_df_for_export(report["categories_df"]).to_excel(writer, sheet_name="By Category", index=False)
 
         # Monthly breakdown
         if "monthly_df" in report and not report["monthly_df"].empty:
-            report["monthly_df"].to_excel(writer, sheet_name="Monthly Summary", index=False)
+            sanitize_df_for_export(report["monthly_df"]).to_excel(writer, sheet_name="Monthly Summary", index=False)
 
     return output.getvalue()
 
@@ -111,7 +112,7 @@ def build_excel_report(report: dict) -> bytes:
 def build_csv_report(report: dict) -> str:
     """Build a simple CSV of deductible expenses."""
     if "deductible_df" in report and not report["deductible_df"].empty:
-        return report["deductible_df"].to_csv(index=False)
+        return sanitize_df_for_export(report["deductible_df"]).to_csv(index=False)
     return ""
 
 

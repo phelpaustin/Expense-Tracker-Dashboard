@@ -110,8 +110,14 @@ def normalize_dataframe_dates(df: pd.DataFrame, date_column: str = None) -> pd.D
     
     if col in df.columns:
         logger.debug(f"Normalizing dates in column: {col}")
-        df[col] = df[col].apply(normalize_date)
-    
+        # Vectorised equivalent of `.apply(normalize_date)`: parse the whole
+        # column in one pass, then take the date component. `format="mixed"`
+        # infers the format per element (like the old per-row call), so varied
+        # inputs (ISO, DD-MM-YYYY, with time, etc.) parse the same way. Blank or
+        # unparseable values become NaT (treated as missing everywhere via
+        # isna/dropna). Avoids a Python-level function call per row each rerun.
+        df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed").dt.date
+
     return df
 
 

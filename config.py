@@ -16,12 +16,127 @@ WORKSHEET_NAME = "Transactions"
 LOCAL_CSV_FILE = "expenses_local.csv"
 CREDENTIALS_FILE = "credentials.json"
 
+# OAuth *user* credentials for Google Drive file storage.
+# A service account has no Drive storage quota, so it cannot create/own
+# files in a personal My Drive folder. Logging in as a real user (whose
+# account has quota) fixes receipt uploads and data-file sync.
+#   - OAUTH_CLIENT_FILE : OAuth 2.0 "Desktop app" client downloaded from
+#                         Google Cloud Console.
+#   - OAUTH_TOKEN_FILE  : generated once by running ``authorize_drive.py``;
+#                         holds the saved/refreshable user token.
+OAUTH_CLIENT_FILE = "oauth_client.json"
+OAUTH_TOKEN_FILE = "token.json"
+
+# OAuth scope for Google Drive / Sheets access.
+#
+# NOTE: this must stay as the full ``drive`` scope for the current setup:
+#   * the gspread client opens the spreadsheet BY NAME with a *service
+#     account*, which requires Drive access to a sheet shared with it —
+#     ``drive.file`` only exposes files the app itself created, so open-by-name
+#     returns nothing and the connection fails.
+#   * the existing user token (token.json) was authorized with this broad
+#     scope; changing it here without re-running authorize_drive.py causes a
+#     scope-mismatch on refresh.
+#
+# To move to least privilege later, do BOTH: open the sheet by key/URL (so only
+# the ``spreadsheets`` scope is needed) and re-run authorize_drive.py with
+# ``drive.file`` for the user token. Until then, keep the full scope.
+GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+
+
+# ============================================================
+# PENDING BILLS (total-bill entry, itemise later)
+# ============================================================
+# Separate store so pending/total bills never touch the itemised
+# expense data, analytics, dedup or charts until they are itemised.
+PENDING_BILLS_FILE = "data/pending_bills.json"
+
+# ============================================================
+# BILLS LEDGER (consolidated shop / date / amount view)
+# ============================================================
+# Manually-added ledger entries live in their own store. The Bills
+# Ledger page merges these with bill-level totals derived from itemised
+# expenses and from pending bills (read-only) into one simple list.
+BILLS_LEDGER_FILE = "data/bills_ledger.json"
+
+# Local folder used to keep a copy of receipts when Google Drive is
+# unavailable (mirrors the local-CSV fallback for expense data).
+RECEIPTS_LOCAL_DIR = "receipts"
+
+# Name of the sub-folder created inside the same Drive folder that
+# holds the expense spreadsheet ("Expense Manager" location) where
+# receipt copies are uploaded.
+DRIVE_RECEIPTS_FOLDER_NAME = "Expense Receipts"
+
+
+# ============================================================
+# RECEIPT SCANNER PIPELINE (3 stages: upload → translate → archive)
+# ============================================================
+# A crash-resumable pipeline where a receipt physically MOVES between
+# folders as it progresses. State is implicit in which folder a file
+# lives in, so a restart simply re-lists the folders. Files are mirrored
+# locally (works offline) and synced to a "Scanner" sub-folder inside the
+# shared spreadsheet folder on Google Drive.
+SCANNER_LOCAL_DIR = "scanner"
+SCANNER_DRIVE_ROOT = "Scanner"
+
+SCANNER_STAGE_UPLOAD = 1       # uploaded, awaiting translation
+SCANNER_STAGE_TRANSLATED = 2   # translated, editable, awaiting push
+SCANNER_STAGE_FINAL = 3        # pushed to expense table, archived
+
+# Local mirror sub-directories per stage (under SCANNER_LOCAL_DIR).
+SCANNER_LOCAL_SUBDIRS = {
+    SCANNER_STAGE_UPLOAD: "1_uploads",
+    SCANNER_STAGE_TRANSLATED: "2_translated",
+    SCANNER_STAGE_FINAL: "3_final",
+}
+
+# Google Drive sub-folder names per stage (under SCANNER_DRIVE_ROOT).
+SCANNER_DRIVE_SUBFOLDERS = {
+    SCANNER_STAGE_UPLOAD: "1_Uploads_For_Translation",
+    SCANNER_STAGE_TRANSLATED: "2_Translated_Data",
+    SCANNER_STAGE_FINAL: "3_Final_Expense_Receipts",
+}
+
 
 # ============================================================
 # CURRENCY SETTINGS
 # ============================================================
 DEFAULT_CURRENCY = "SEK"
-SUPPORTED_CURRENCIES = ["SEK", "INR", "USD", "EUR"]
+SUPPORTED_CURRENCIES = [
+    "SEK", "INR", "USD", "EUR", "GBP", "JPY", "CHF",
+    "AUD", "CAD", "CNY", "THB", "SGD", "AED", "NOK", "DKK",
+]
+
+# Display symbols for each supported currency. Falls back to the ISO code.
+CURRENCY_SYMBOLS = {
+    "SEK": "kr",
+    "INR": "₹",
+    "USD": "$",
+    "EUR": "€",
+    "GBP": "£",
+    "JPY": "¥",
+    "CHF": "CHF",
+    "AUD": "A$",
+    "CAD": "C$",
+    "CNY": "¥",
+    "THB": "฿",
+    "SGD": "S$",
+    "AED": "د.إ",
+    "NOK": "kr",
+    "DKK": "kr",
+}
+
+# Currencies conventionally written with the symbol before the amount.
+CURRENCY_SYMBOL_PREFIX = {
+    "USD", "INR", "GBP", "JPY", "CNY", "AUD", "CAD", "SGD", "THB", "AED", "EUR",
+}
+
+
+# ============================================================
+# AI MODELS
+# ============================================================
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 
 # ============================================================
@@ -52,7 +167,13 @@ class Columns:
     ITEM = "Item"
     BRAND = "Brand"
     SHOP = "Shop"
-    
+
+    # Stable per-row identity. Assigned once (short UUID) and never reused, so
+    # deduplication is identity-based and two genuinely-identical purchases are
+    # never silently merged. Excluded from all_core() so it does not take part
+    # in value-based comparisons or the visible schema.
+    ENTRY_ID = "EntryId"
+
     # Financial columns
     PRICE_PAID = "PricePaid"
     CURRENCY = "Currency"
@@ -276,6 +397,25 @@ class SessionKeys:
     DATA_VERSION = "data_version"
     MULTI_ITEMS = "multi_items"
     
+    # Pending bills (total-bill entry, itemise later)
+    PENDING_BILLS = "pending_bills"
+    DRIVE_RECEIPTS_FOLDER_ID = "drive_receipts_folder_id"
+    ITEMISING_BILL_ID = "itemising_bill_id"
+    PENDING_ITEMS = "pending_items"
+    
+    # Google Drive data-file sync
+    DRIVE_SPREADSHEET_ID = "drive_spreadsheet_id"
+    DRIVE_DATA_FOLDER_ID = "drive_data_folder_id"
+    DATA_SYNC_PULLED = "data_sync_pulled"
+    # Set once a non-recoverable Drive write error (e.g. service-account
+    # storageQuotaExceeded) is seen, to stop retrying for the session.
+    DRIVE_WRITE_DISABLED = "drive_write_disabled"
+
+    # Receipt scanner pipeline (3-stage Drive/local folders)
+    SCANNER_ROOT_FOLDER_ID = "scanner_root_folder_id"
+    SCANNER_STAGE_FOLDER_IDS = "scanner_stage_folder_ids"
+    SCANNER_SYNCED = "scanner_synced"
+    
     # UI state
     SELECTED_CATEGORY = "selected_category"
     SELECTED_SUBCATEGORY = "selected_subcategory"
@@ -454,22 +594,16 @@ class ImportStateManager:
 # ============================================================
 def get_currency_symbol(currency: str) -> str:
     """Get currency symbol for display."""
-    symbols = {
-        "SEK": "kr",
-        "INR": "₹",
-        "USD": "$",
-        "EUR": "€"
-    }
-    return symbols.get(currency, currency)
+    return CURRENCY_SYMBOLS.get(currency, currency)
 
 
 def format_currency(amount: float, currency: str = DEFAULT_CURRENCY) -> str:
     """Format amount with currency symbol."""
     symbol = get_currency_symbol(currency)
-    if currency in ["SEK", "EUR"]:
-        return f"{amount:,.2f} {symbol}"
-    else:
+    if currency in CURRENCY_SYMBOL_PREFIX:
         return f"{symbol}{amount:,.2f}"
+    else:
+        return f"{amount:,.2f} {symbol}"
 
 
 # ============================================================
@@ -482,10 +616,13 @@ __all__ = [
     "WORKSHEET_NAME",
     "LOCAL_CSV_FILE",
     "CREDENTIALS_FILE",
+    "GOOGLE_DRIVE_SCOPE",
     
     # Currency
     "DEFAULT_CURRENCY",
     "SUPPORTED_CURRENCIES",
+    "CURRENCY_SYMBOLS",
+    "CURRENCY_SYMBOL_PREFIX",
     
     # Cache
     "CACHE_TTL_SHORT",

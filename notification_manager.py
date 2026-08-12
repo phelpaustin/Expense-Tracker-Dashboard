@@ -28,52 +28,13 @@ except ImportError:
 
 SETTINGS_FILE = "data/notification_settings.json"
 
-_DEFAULT_SETTINGS: dict = {
-    "enable_alerts": True,
-    "alert_at_80": True,
-    "alert_at_90": True,
-    "alert_at_100": True,
-    "enable_daily_summary": False,
-    "summary_time": "18:00",
-}
-
-
-def load_notification_settings() -> dict:
-    """
-    Load notification settings from disk.
-
-    Returns the persisted settings dict, or the defaults if the file does
-    not exist or cannot be parsed.
-    """
-    path = Path(SETTINGS_FILE)
-    if path.exists():
-        try:
-            stored = json.loads(path.read_text(encoding="utf-8"))
-            # Merge with defaults so new keys added in future releases are
-            # present even for users with an older settings file on disk.
-            return {**_DEFAULT_SETTINGS, **stored}
-        except Exception:
-            pass
-    return dict(_DEFAULT_SETTINGS)
-
-
-def save_notification_settings(settings: dict) -> bool:
-    """
-    Persist notification settings to disk.
-
-    Args:
-        settings: Settings dict to save.
-
-    Returns:
-        True on success, False on failure.
-    """
-    try:
-        path = Path(SETTINGS_FILE)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-        return True
-    except Exception:
-        return False
+# Persistence is owned by settings_manager (single source of truth).
+# Re-exported here so existing call sites keep working unchanged.
+from settings_manager import (
+    NOTIFICATION_DEFAULTS as _DEFAULT_SETTINGS,
+    load_notification_settings,
+    save_notification_settings,
+)
 
 
 # ═══════════════════════════════════════════════════════════════

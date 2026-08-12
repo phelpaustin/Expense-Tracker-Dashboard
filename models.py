@@ -8,6 +8,10 @@ from typing import Optional, List, Any
 from datetime import date, datetime
 from enum import Enum
 
+# Alias for the date type so model fields can be named `date` without the
+# field shadowing the imported type during annotation evaluation (Pydantic 2.x).
+DateType = date
+
 
 # ============================================================
 # ENUMS
@@ -24,6 +28,17 @@ class CurrencyEnum(str, Enum):
     INR = "INR"
     USD = "USD"
     EUR = "EUR"
+    GBP = "GBP"
+    JPY = "JPY"
+    CHF = "CHF"
+    AUD = "AUD"
+    CAD = "CAD"
+    CNY = "CNY"
+    THB = "THB"
+    SGD = "SGD"
+    AED = "AED"
+    NOK = "NOK"
+    DKK = "DKK"
 
 
 # ============================================================
@@ -36,8 +51,11 @@ class ExpenseItem(BaseModel):
     This ensures data integrity at the model level.
     """
     # Required fields
-    date: date = Field(..., description="Date of expense")
-    expense_type: ExpenseTypeEnum = Field(..., description="Type of expense")
+    date: DateType = Field(..., description="Date of expense")
+    # Free-text: the app lets users add custom expense types via the dropdown,
+    # so this is a plain string rather than a fixed enum. (ExpenseTypeEnum is
+    # kept for reference/back-compat but not enforced here.)
+    expense_type: str = Field(..., min_length=1, max_length=100, description="Type of expense")
     item: str = Field(..., min_length=1, max_length=200, description="Item name")
     price_paid: float = Field(..., gt=0, le=1_000_000, description="Price in SEK")
     quantity: float = Field(..., gt=0, le=100_000, description="Quantity purchased")
@@ -60,7 +78,7 @@ class ExpenseItem(BaseModel):
 
     @field_validator('date', mode='after')
     @classmethod
-    def validate_date(cls, v: date) -> date:
+    def validate_date(cls, v: DateType) -> DateType:
         """Ensure date is not in the future and not unreasonably old."""
         today = datetime.now().date()
         if v > today:
@@ -117,7 +135,7 @@ class ExpenseBatch(BaseModel):
     """
     Batch of expenses from same shopping trip.
     """
-    date: date
+    date: DateType
     expense_type: ExpenseTypeEnum
     shop: str
     currency: CurrencyEnum = CurrencyEnum.SEK

@@ -5,13 +5,13 @@
 import streamlit as st
 import pandas as pd
 
+from config import Columns
 from date_utils import normalize_dataframe_dates, format_date
-from data_manager import bump_data_version, clean_data
 from ui_components import sidebar_add_expense, filter_section
 from charts import kpi_row
 from analytics import monthly_trends
 from alerts_engine import get_all_alerts, get_enabled_alerts
-from page_helpers import hero, donut_chart, monthly_bar_chart, period_selector, incomplete_entries_expander
+from page_helpers import hero, donut_chart, monthly_bar_chart, period_selector, incomplete_entries_expander, handle_import_merge, section_header
 import feature_flags as ff
 
 
@@ -42,50 +42,8 @@ def _alerts_banner(df: pd.DataFrame) -> None:
 
 
 # ── Import / merge helper ──────────────────────────────────────
-
-def _handle_import_merge(df: pd.DataFrame, save_data, sheet) -> None:
-    show_import = (
-        not st.session_state.get("merge_complete", False)
-        and not st.session_state.get("merge_complete_flagged", False)
-    )
-    if show_import:
-        existing_cols = df.columns.tolist() if not df.empty else None
-        if ff.HAS_IMPORT_WORKFLOW:
-            ff.import_workflow(existing_columns=existing_cols)
-        elif ff.import_button is not None:
-            imported = ff.import_button(existing_columns=existing_cols)
-            if imported is not None and not imported.empty:
-                if "Date" in imported.columns:
-                    imported["Date"] = normalize_dataframe_dates(imported, "Date")["Date"]
-                st.session_state["pending_import_df"] = imported
-                st.session_state["merge_ready"] = True
-                st.subheader("📄 Preview")
-                st.dataframe(imported, width="stretch", hide_index=True)
-    else:
-        if st.session_state.get("merge_complete"):
-            st.sidebar.success("✅ Last import merged.")
-
-    if st.session_state.get("merge_ready", False):
-        if ff.HAS_MERGE:
-            ff.perform_merge_if_ready(df, save_data, sheet)
-        else:
-            pending = st.session_state.get("pending_import_df", pd.DataFrame())
-            if not pending.empty:
-                try:
-                    combined = pd.concat([df, pending], ignore_index=True)
-                    from data_manager import clean_data
-                    combined = clean_data(combined)
-                    save_data(combined, sheet)
-                    st.cache_data.clear()
-                    bump_data_version()
-                    st.success("✅ Imported data merged successfully!")
-                    for k in ["merge_ready", "pending_import_df"]:
-                        st.session_state.pop(k, None)
-                    st.session_state["merge_complete_flagged"] = True
-                    st.session_state["merge_complete"] = True
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Merge failed: {e}")
+# Shared workflow lives in page_helpers.handle_import_merge (also used by
+# the Import / Export page) so the logic exists in exactly one place.
 
 
 # ── Quick-Intelligence strip ───────────────────────────────────
@@ -99,14 +57,14 @@ def _quick_intelligence(df: pd.DataFrame, df_period: pd.DataFrame) -> None:
         normalize_dataframe_dates(df_prep, "Date")["Date"], errors="coerce"
     )
     df_prep["PricePaid"] = pd.to_numeric(df_prep["PricePaid"], errors="coerce").fillna(0)
-    df_prep["YM"] = df_prep["Date"].dt.to_period("M").astype(str)
+    df_prep[Columns.YEAR_MONTH] = df_prep["Date"].dt.to_period("M").astype(str)
 
     now = pd.Timestamp.now()
     curr_ym = now.to_period("M").strftime("%Y-%m")
     prev_ym = (now - pd.DateOffset(months=1)).to_period("M").strftime("%Y-%m")
-    this_mo = df_prep[df_prep["YM"] == curr_ym]["PricePaid"].sum()
-    prev_mo = df_prep[df_prep["YM"] == prev_ym]["PricePaid"].sum()
-    avg_3mo = df_prep.groupby("YM")["PricePaid"].sum().sort_index().tail(4).head(3).mean()
+    this_mo = df_prep[df_prep[Columns.YEAR_MONTH] == curr_ym]["PricePaid"].sum()
+    prev_mo = df_prep[df_prep[Columns.YEAR_MONTH] == prev_ym]["PricePaid"].sum()
+    avg_3mo = df_prep.groupby(Columns.YEAR_MONTH)["PricePaid"].sum().sort_index().tail(4).head(3).mean()
     day_rate = this_mo / now.day if now.day > 0 else 0
     projected = day_rate * pd.Period(curr_ym, "M").days_in_month
 
@@ -200,6 +158,29 @@ def _render_transaction_groups(df: pd.DataFrame, t: dict) -> None:
 
 # ── Public page entry-point ────────────────────────────────────
 
+def _pending_bills_badge() -> None:
+    """Show a banner with the count of pending (un-itemised) bills."""
+    if not ff.HAS_PENDING_BILLS:
+        return
+    try:
+        from pending_bills import pending_count
+        n = pending_count()
+    except Exception:
+        return
+    if n <= 0:
+        return
+
+    col_msg, col_btn = st.columns([4, 1])
+    with col_msg:
+        st.info(
+            f"🧾 You have **{n}** pending bill{'s' if n != 1 else ''} waiting to be itemised."
+        )
+    with col_btn:
+        if st.button("Review →", key="goto_pending_bills", width="stretch"):
+            st.session_state["page"] = "pending_bills"
+            st.rerun()
+
+
 def render(df: pd.DataFrame, save_data, sheet, t: dict) -> None:
     """
     Render the main dashboard page.
@@ -219,32 +200,43 @@ def render(df: pd.DataFrame, save_data, sheet, t: dict) -> None:
         "💳",
     )
 
+    # Sidebar add-expense (renders into the sidebar, not the main canvas)
     sidebar_add_expense(df, lambda d: save_data(d, sheet))
-    df_filtered = filter_section(df)
-    _handle_import_merge(df, save_data, sheet)
 
+    # Filters and export live in the sidebar by design (these functions render
+    # into st.sidebar), keeping the main canvas clean.
+    df_filtered = filter_section(df)
     if ff.export_buttons is not None:
         ff.export_buttons(df)
 
-    incomplete_entries_expander(df, save_data, sheet)
-
+    # ── Main-area strip: notifications + data-fix widgets (only appear when
+    #    they actually have something to show) ──
+    _pending_bills_badge()
     if not df.empty:
         _alerts_banner(df)
+    handle_import_merge(df, save_data, sheet)
+    incomplete_entries_expander(df, save_data, sheet)
 
-    st.markdown("---")
-    st.markdown("### 📅 Select Period")
+    # ── Period selector drives every tab below ──
+    section_header("📅 Select Period", "Choose the time window to analyse")
     df_period = period_selector(df_filtered)
 
-    st.markdown("### 📈 Overview")
-    if not df_period.empty:
+    if df_period.empty:
+        st.info("No data for the selected period. Adjust the filters or period above.")
+        return
+
+    # ── Segmented dashboard: keeps each view focused instead of one long scroll ──
+    tab_overview, tab_records, tab_insights = st.tabs(
+        ["📊 Overview", "🧾 Records", "🧠 Insights"]
+    )
+
+    with tab_overview:
+        section_header("📈 Overview", "Key spending metrics for the selected period")
         if ff.HAS_INTELLIGENCE and ff.smart_kpi_row is not None:
             ff.smart_kpi_row(df)
         else:
-            kpi_row(df_period)
-    else:
-        st.info("No data for selected period.")
+            kpi_row(df_period, df_full=df)
 
-    if not df_period.empty:
         st.markdown("")
         col1, col2 = st.columns([1.4, 1])
         with col1:
@@ -252,12 +244,15 @@ def render(df: pd.DataFrame, save_data, sheet, t: dict) -> None:
         with col2:
             donut_chart(df_period, t)
 
-    if ff.HAS_INTELLIGENCE and not df_period.empty:
-        _quick_intelligence(df, df_period)
+    with tab_records:
+        section_header("🧾 Expense Records", "Transactions grouped by date and shop")
+        _render_transaction_groups(df_period, t)
 
-    if not df_period.empty:
-        st.markdown("---")
-        st.markdown("### 🔍 Period Summary")
+    with tab_insights:
+        if ff.HAS_INTELLIGENCE:
+            _quick_intelligence(df, df_period)
+
+        section_header("🔍 Period Summary", "At-a-glance totals for the current view")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Transactions", len(df_period))
         c2.metric(
@@ -274,10 +269,3 @@ def render(df: pd.DataFrame, save_data, sheet, t: dict) -> None:
             "Unique Categories",
             df_period["Category"].nunique() if "Category" in df_period.columns else "—",
         )
-
-    # ── Expense Records — grouped by (Date, Shop) transaction ─────
-    st.markdown("### 🧾 Expense Records")
-    if not df_period.empty:
-        _render_transaction_groups(df_period, t)
-    else:
-        st.info("No expenses for selected period.")

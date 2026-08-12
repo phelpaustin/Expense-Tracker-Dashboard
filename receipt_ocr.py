@@ -22,11 +22,17 @@ import io
 import json
 import os
 import base64
+import logging
 import requests
 import streamlit as st
 import pandas as pd
 from datetime import date
 from typing import Optional, Dict, List, Tuple
+
+from config import CLAUDE_MODEL
+from security_utils import validate_upload, UploadValidationError
+
+log = logging.getLogger("receipt_ocr")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -112,7 +118,7 @@ def pdf_to_images(pdf_bytes: bytes) -> List[bytes]:
         return images
 
     except ImportError:
-        pass  # try next method
+        log.debug("pymupdf (fitz) not available, falling back to pdf2image")
 
     # ── pdf2image (fallback) ───────────────────────────────────
     try:
@@ -230,8 +236,8 @@ def extract_with_ai(
     # Compress image before sending — reduces upload time and avoids timeouts
     try:
         image_bytes = _compress_image(image_bytes)
-    except Exception:
-        pass  # if compression fails, use original
+    except Exception as e:
+        log.warning("Image compression failed, sending original: %s", e)
 
     system_prompt = _build_system_prompt(dropdown_options or {})
     failures = []
@@ -281,7 +287,7 @@ def _extract_claude(image_bytes: bytes, api_key: str, system_prompt: str = None)
     encoded = base64.standard_b64encode(image_bytes).decode("utf-8")
 
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=CLAUDE_MODEL,
         max_tokens=8192,
         system=system_prompt,
         messages=[
@@ -795,7 +801,7 @@ def _parse_items(lines):
 
 def _to_float(s):
     try: return float(str(s).replace(",", "."))
-    except: return 0.0
+    except (ValueError, TypeError): return 0.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -836,7 +842,11 @@ def receipt_upload_ui_with_translation(df, save_fn, sheet=None):
     from config import Columns, QuantityUnit
 
     st.title("📷 Receipt Scanner")
-    st.markdown("Upload a receipt photo and let AI extract, translate, and categorise everything automatically.")
+    st.markdown(
+        "A 3-stage pipeline: **upload** receipts, **translate & edit** them, "
+        "then **push** to the expense table. Receipts are saved to Google Drive "
+        "at every stage, so you can resume any time."
+    )
 
     dropdown_options = _load_dropdown_options()
     all_categories   = _get_categories(dropdown_options)
@@ -949,178 +959,292 @@ def receipt_upload_ui_with_translation(df, save_fn, sheet=None):
     else:
         st.info("📝 Fallback mode — using OCR + MyMemory translation (free). Add an AI key above for better results.")
 
-    # ── Upload ─────────────────────────────────────────────────
-    uploaded_file = st.file_uploader(
-        "Upload Receipt (image or PDF)",
-        type=["jpg", "jpeg", "png", "webp", "pdf"],
-        help="Photo of a receipt, or a digital PDF receipt",
+    # ── 3-stage pipeline ───────────────────────────────────────
+    # Stage 1 Upload → Stage 2 Translate & edit → Stage 3 Archive.
+    # A receipt physically moves between folders (local + Drive) as it
+    # progresses, so work can be resumed after a crash/restart.
+    import scanner_store as ss
+
+    # Recover any in-flight receipts from Drive (best-effort, once/session).
+    ss.sync_from_drive()
+
+    keys = {
+        "anthropic": anthropic_key, "openai": openai_key, "gemini": gemini_key,
+        "vision": vision_key, "google_tr": google_tr_key, "deepl": deepl_key,
+    }
+
+    tab_upload, tab_translate, tab_archive = st.tabs(
+        ["1️⃣ Upload", "2️⃣ Translate & Push", "3️⃣ Archive"]
     )
 
-    if not uploaded_file:
-        _show_ocr_instructions()
-        return
+    with tab_upload:
+        _stage1_upload_ui(ss)
 
-    is_pdf = uploaded_file.name.lower().endswith(".pdf")
+    with tab_translate:
+        _stage2_translate_ui(
+            ss, df, save_fn, sheet, keys, has_ai,
+            dropdown_options, all_categories, all_units,
+        )
 
-    if is_pdf:
-        st.info(f"📄 PDF detected — will process all pages.")
-    else:
-        st.image(uploaded_file, caption="Uploaded Receipt", use_container_width=True)
+    with tab_archive:
+        _stage3_archive_ui(ss)
 
-    if st.button("🔍 Analyse Receipt", type="primary"):
-        uploaded_file.seek(0)
-        file_bytes = uploaded_file.read()
-        raw_sv = raw_en = ""
 
-        # ── Convert PDF to page images ─────────────────────────
-        if is_pdf:
-            try:
-                with st.spinner("📄 Converting PDF pages to images…"):
-                    page_images = pdf_to_images(file_bytes)
-                st.info(f"Found {len(page_images)} page(s) — scanning each one.")
-            except ImportError as e:
-                st.error(str(e))
-                return
-            except Exception as e:
-                st.error(f"PDF conversion failed: {e}")
-                return
-        else:
-            page_images = [file_bytes]   # single image treated as one page
-
-        # ── Analyse each page ──────────────────────────────────
-        if has_ai:
-            page_results = []
-            provider     = ""
-            for i, img_bytes in enumerate(page_images):
-                label = f"page {i+1}/{len(page_images)}" if len(page_images) > 1 else "receipt"
-                with st.spinner(f"🤖 AI reading {label}…"):
-                    result, provider = extract_with_ai(
-                        img_bytes,
-                        anthropic_key=anthropic_key or None,
-                        openai_key=openai_key or None,
-                        gemini_key=gemini_key or None,
-                        dropdown_options=dropdown_options,
-                    )
-                if result:
-                    page_results.append(result)
-            parsed = merge_parsed_pages(page_results) if page_results else {}
-
-        else:
-            all_text_sv = []
-            for i, img_bytes in enumerate(page_images):
-                label = f"page {i+1}/{len(page_images)}" if len(page_images) > 1 else "receipt"
-                with st.spinner(f"📷 OCR on {label}…"):
-                    # Wrap bytes as file-like for extract_text_from_image
-                    img_file = io.BytesIO(img_bytes)
-                    img_file.name = "page.jpg"
-                    text, _ = extract_text_from_image(img_file, vision_key or None)
-                if text:
-                    all_text_sv.append(text)
-
-            raw_sv = "\n".join(all_text_sv)
-            if not raw_sv:
-                st.error("❌ OCR could not read the receipt. Try a clearer image or add an AI key.")
-                return
-            with st.spinner("🌐 Translating…"):
-                raw_en, provider = translate_swedish_to_english(
-                    raw_sv,
-                    google_key=google_tr_key or None,
-                    deepl_key=deepl_key or None,
-                )
-            with st.spinner("🔎 Parsing…"):
-                parsed = parse_receipt_text(raw_en)
-
-        if not parsed or (not parsed.get("items") and "error" in parsed):
-            st.error("❌ Could not extract data. Please try a clearer file.")
+# ═══════════════════════════════════════════════════════════════
+# 3-STAGE PIPELINE HELPERS
+# ═══════════════════════════════════════════════════════════════
+def _preview_receipt(ss, stage, receipt_id, filename, width=160):
+    """Show an inline thumbnail (image) or a filename caption (PDF/other)."""
+    if ss.is_image(filename):
+        data = ss.read_receipt_bytes(stage, receipt_id)
+        if data:
+            st.image(data, width=width)
             return
+    st.caption(f"📄 {filename}")
 
-        st.session_state.update({
-            "ocr_parsed":   parsed,
-            "ocr_text_sv":  raw_sv,
-            "ocr_text_en":  raw_en,
-            "ocr_provider": provider,
-            "ocr_ai_mode":  has_ai,
-        })
-        st.success(f"✅ Extracted using **{provider}**")
 
-    # ── Editor ─────────────────────────────────────────────────
-    if "ocr_parsed" not in st.session_state:
+def _run_extraction(file_bytes, original_name, keys, has_ai, dropdown_options):
+    """Run AI (or OCR fallback) extraction on a receipt's bytes."""
+    is_pdf = (original_name or "").lower().endswith(".pdf")
+    if is_pdf:
+        try:
+            page_images = pdf_to_images(file_bytes)
+        except ImportError as e:
+            st.error(str(e))
+            return {}, ""
+        except Exception as e:  # noqa: BLE001
+            st.error(f"PDF conversion failed: {e}")
+            return {}, ""
+    else:
+        page_images = [file_bytes]
+
+    if has_ai:
+        results = []
+        provider = ""
+        for i, img in enumerate(page_images):
+            label = f"page {i+1}/{len(page_images)}" if len(page_images) > 1 else "receipt"
+            with st.spinner(f"🤖 AI reading {label}…"):
+                r, provider = extract_with_ai(
+                    img,
+                    anthropic_key=keys["anthropic"] or None,
+                    openai_key=keys["openai"] or None,
+                    gemini_key=keys["gemini"] or None,
+                    dropdown_options=dropdown_options,
+                )
+            if r:
+                results.append(r)
+        return (merge_parsed_pages(results) if results else {}), provider
+
+    # OCR fallback
+    texts = []
+    for i, img in enumerate(page_images):
+        label = f"page {i+1}/{len(page_images)}" if len(page_images) > 1 else "receipt"
+        with st.spinner(f"📷 OCR on {label}…"):
+            img_file = io.BytesIO(img)
+            img_file.name = "page.jpg"
+            text, _ = extract_text_from_image(img_file, keys["vision"] or None)
+        if text:
+            texts.append(text)
+    raw_sv = "\n".join(texts)
+    if not raw_sv:
+        return {}, ""
+    with st.spinner("🌐 Translating…"):
+        raw_en, provider = translate_swedish_to_english(
+            raw_sv,
+            google_key=keys["google_tr"] or None,
+            deepl_key=keys["deepl"] or None,
+        )
+    with st.spinner("🔎 Parsing…"):
+        parsed = parse_receipt_text(raw_en)
+    return parsed, provider
+
+
+def _stage1_upload_ui(ss):
+    """Stage 1 — upload receipts into the translation queue."""
+    st.markdown("#### Upload receipts for translation")
+    st.caption(
+        "Files are saved to the **Uploads** folder (local + Google Drive). "
+        "If the app closes, your queue is preserved here."
+    )
+
+    uploads = st.file_uploader(
+        "Upload receipt(s) — image or PDF",
+        type=["jpg", "jpeg", "png", "webp", "pdf"],
+        accept_multiple_files=True,
+        key="scanner_uploader",
+    )
+    if uploads and st.button("⬆️ Save to queue", type="primary", key="scanner_save"):
+        saved = 0
+        for uf in uploads:
+            try:
+                # Cap receipt size to guard against memory-exhaustion /
+                # decompression-bomb inputs before decoding.
+                validate_upload(uf, max_mb=15)
+                uf.seek(0)
+                ss.save_upload(uf.read(), uf.name, uf.type)
+                saved += 1
+            except UploadValidationError as e:
+                st.error(f"Skipped {uf.name}: {e}")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Failed to save {uf.name}: {e}")
+        if saved:
+            st.success(f"✅ Queued {saved} receipt(s) for translation.")
+            st.rerun()
+
+    pending = ss.list_uploads()
+    st.markdown("---")
+    st.markdown(f"#### 📥 Queued for translation ({len(pending)})")
+    if not pending:
+        st.info("No receipts queued. Upload above to begin.")
         return
+    for rec in pending:
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([1, 3, 1])
+            with c1:
+                _preview_receipt(
+                    ss, ss.SCANNER_STAGE_UPLOAD, rec["receipt_id"], rec["filename"]
+                )
+            with c2:
+                st.write(f"**{rec['original_name']}**")
+                st.caption(f"ID: `{rec['receipt_id']}`")
+                st.caption("Open **Translate & Push** to process this receipt.")
+            with c3:
+                if st.button("🗑 Discard", key=f"disc1_{rec['receipt_id']}"):
+                    ss.discard(rec["receipt_id"], ss.SCANNER_STAGE_UPLOAD)
+                    st.rerun()
 
-    parsed   = st.session_state["ocr_parsed"]
-    provider = st.session_state.get("ocr_provider", "")
-    ai_mode  = st.session_state.get("ocr_ai_mode", False)
 
-    # Show raw text only in fallback mode
-    if not ai_mode:
-        with st.expander("📄 Extracted Text"):
-            tab1, tab2 = st.tabs(["🇸🇪 Swedish (Original)", f"🇬🇧 English ({provider})"])
-            with tab1: st.code(st.session_state.get("ocr_text_sv",""), language="text")
-            with tab2: st.code(st.session_state.get("ocr_text_en",""), language="text")
+def _stage2_translate_ui(ss, df, save_fn, sheet, keys, has_ai,
+                         dropdown_options, all_categories, all_units):
+    """Stage 2 — translate queued receipts, then edit and push them."""
+    # Section A — awaiting translation
+    awaiting = ss.list_uploads()
+    st.markdown(f"#### 🌐 Awaiting translation ({len(awaiting)})")
+    if not awaiting:
+        st.caption("Nothing waiting. Upload receipts in the **Upload** tab.")
+    for rec in awaiting:
+        with st.container(border=True):
+            c1, c2 = st.columns([1, 4])
+            with c1:
+                _preview_receipt(
+                    ss, ss.SCANNER_STAGE_UPLOAD, rec["receipt_id"],
+                    rec["filename"], width=120,
+                )
+            with c2:
+                st.write(f"**{rec['original_name']}**  ·  `{rec['receipt_id']}`")
+                if st.button("🌐 Translate", key=f"tr_{rec['receipt_id']}",
+                             type="primary"):
+                    data = ss.read_receipt_bytes(
+                        ss.SCANNER_STAGE_UPLOAD, rec["receipt_id"]
+                    )
+                    if not data:
+                        st.error("Could not read the receipt file.")
+                    else:
+                        parsed, provider = _run_extraction(
+                            data, rec["original_name"], keys, has_ai,
+                            dropdown_options,
+                        )
+                        if not parsed or (not parsed.get("items")
+                                          and "error" in parsed):
+                            st.error("❌ Could not extract data. Try a clearer file.")
+                        else:
+                            ss.translate_promote(
+                                rec["receipt_id"], parsed, provider
+                            )
+                            st.success(f"✅ Translated using **{provider or 'OCR'}**")
+                            st.rerun()
 
-    # Header
-    st.markdown("### ✏️ Review Receipt")
-    col1, col2 = st.columns(2)
-    with col1:
-        date_val     = parsed.get("date") or date.today()
-        if isinstance(date_val, str):
-            try: date_val = date.fromisoformat(date_val)
-            except: date_val = date.today()
-        receipt_date = st.date_input("Date", value=date_val)
-        shop         = st.text_input("Shop", value=parsed.get("shop", "Unknown"))
-    with col2:
-        total = st.number_input(
-            f"Total ({parsed.get('currency', 'SEK')})",
-            value=float(parsed.get("total", 0) or 0),
-            min_value=0.0, step=0.01,
+    st.markdown("---")
+
+    # Section B — translated, ready to edit & push
+    translated = ss.list_translated()
+    st.markdown(f"#### ✏️ Translated — edit & push ({len(translated)})")
+    if not translated:
+        st.info("No translated receipts yet.")
+        return
+    for record in translated:
+        rid = record["receipt_id"]
+        data = record.get("data", {}) or {}
+        title = (
+            f"🧾 {record.get('original_name', rid)}  ·  "
+            f"{data.get('shop', 'Unknown')}  ·  "
+            f"{data.get('total', '?')} {data.get('currency', 'SEK')}"
         )
-        pass  # col2: total only
+        with st.expander(title):
+            _edit_and_push_one(
+                ss, record, df, save_fn, sheet,
+                all_categories, all_units,
+            )
 
-    default_category = "Groceries"
-    default_sub      = _get_subcategories(dropdown_options, default_category)
 
-    # Items editor
-    st.markdown("### 🧾 Edit Items")
-    if ai_mode:
-        st.caption("AI has pre-filled categories, quantities, and units. Edit anything that looks wrong.")
-    else:
-        st.caption("Review the extracted items. Edit any field inline; add or remove rows as needed.")
+def _edit_and_push_one(ss, record, df, save_fn, sheet, all_categories, all_units):
+    """Editable form for one translated receipt: save edits or push to table."""
+    rid = record["receipt_id"]
+    data = record.get("data", {}) or {}
 
-    raw_items = parsed.get("items", [])
-    if raw_items:
-        items_df = pd.DataFrame(raw_items)
-        for col in ("name", "price", "quantity", "quantity_unit", "category", "subcategory"):
-            if col not in items_df.columns:
-                if col == "name":          items_df[col] = ""
-                elif col in ("price","quantity"): items_df[col] = 0.0
-                elif col == "quantity_unit":      items_df[col] = "pcs"
-                elif col == "category":           items_df[col] = default_category
-                elif col == "subcategory":        items_df[col] = default_sub[0] if default_sub else "General"
-    else:
-        items_df = pd.DataFrame(
-            columns=["name","price","quantity","quantity_unit","category","subcategory"]
+    cprev, cform = st.columns([1, 3])
+    with cprev:
+        _preview_receipt(
+            ss, ss.SCANNER_STAGE_TRANSLATED, rid,
+            record.get("receipt_filename", ""), width=180,
         )
+    with cform:
+        c1, c2 = st.columns(2)
+        with c1:
+            date_val = data.get("date") or date.today()
+            if isinstance(date_val, str):
+                try:
+                    date_val = date.fromisoformat(date_val)
+                except Exception:  # noqa: BLE001
+                    date_val = date.today()
+            receipt_date = st.date_input("Date", value=date_val, key=f"d_{rid}")
+            shop = st.text_input("Shop", value=data.get("shop", "Unknown"),
+                                 key=f"s_{rid}")
+        with c2:
+            currency = data.get("currency", "SEK")
+            total = st.number_input(
+                f"Total ({currency})",
+                value=float(data.get("total", 0) or 0),
+                min_value=0.0, step=0.01, key=f"t_{rid}",
+            )
 
-    col_order = ["name","price","quantity","quantity_unit","category","subcategory"]
+    raw_items = data.get("items", [])
+    items_df = pd.DataFrame(raw_items) if raw_items else pd.DataFrame(
+        columns=["name", "price", "quantity", "quantity_unit",
+                 "category", "subcategory"]
+    )
+    for col in ("name", "price", "quantity", "quantity_unit",
+                "category", "subcategory"):
+        if col not in items_df.columns:
+            if col == "name":
+                items_df[col] = ""
+            elif col in ("price", "quantity"):
+                items_df[col] = 0.0
+            elif col == "quantity_unit":
+                items_df[col] = "pcs"
+            elif col == "category":
+                items_df[col] = "Groceries"
+            else:
+                items_df[col] = "General"
+
+    col_order = ["name", "price", "quantity", "quantity_unit",
+                 "category", "subcategory"]
     items_df = items_df[[c for c in col_order if c in items_df.columns]]
 
-    # Ensure AI-suggested categories that aren't in the dropdown are still selectable
-    ai_cats = items_df["category"].dropna().unique().tolist() if "category" in items_df.columns else []
+    ai_cats = (items_df["category"].dropna().unique().tolist()
+               if "category" in items_df.columns else [])
     merged_categories = sorted(set(all_categories) | set(ai_cats))
 
-    edited_items = st.data_editor(
+    edited = st.data_editor(
         items_df,
         num_rows="dynamic",
         use_container_width=True,
         column_config={
             "name":          st.column_config.TextColumn("Item", required=True),
-            "price":         st.column_config.NumberColumn("Price",  min_value=0.0, format="%.2f"),
-            "quantity":      st.column_config.NumberColumn("Qty",    min_value=0.0, format="%.3f"),
+            "price":         st.column_config.NumberColumn("Price", min_value=0.0, format="%.2f"),
+            "quantity":      st.column_config.NumberColumn("Qty", min_value=0.0, format="%.3f"),
             "quantity_unit": st.column_config.SelectboxColumn(
-                "Unit",
-                options=all_units,
-                required=True,
-                help="Select a unit",
+                "Unit", options=all_units, required=True, help="Select a unit",
             ),
             "category": st.column_config.TextColumn(
                 "Category",
@@ -1128,64 +1252,98 @@ def receipt_upload_ui_with_translation(df, save_fn, sheet=None):
                 required=True,
             ),
             "subcategory": st.column_config.TextColumn(
-                "Subcategory",
-                help="Type any subcategory freely",
+                "Subcategory", help="Type any subcategory freely",
             ),
         },
-        key="receipt_items_editor",
+        key=f"items_{rid}",
     )
 
-    if edited_items.empty:
-        st.warning("No items to save. Add at least one row above.")
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("💾 Save edits", key=f"save_{rid}"):
+            data["date"] = str(receipt_date)
+            data["shop"] = shop
+            data["total"] = float(total)
+            data["currency"] = currency
+            data["items"] = edited.fillna("").to_dict("records")
+            ss.save_translation(rid, data)
+            st.success("Saved.")
+            st.rerun()
+    with b2:
+        if st.button("✅ Push to Expense Table", key=f"push_{rid}",
+                     type="primary"):
+            rows = _build_expense_rows(edited, receipt_date, shop, currency)
+            if not rows:
+                st.error("No valid items to push.")
+            else:
+                updated = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+                save_fn(updated, sheet)
+                ss.push_promote(rid)
+                try:
+                    from data_manager import bump_data_version
+                    bump_data_version()
+                except Exception:  # noqa: BLE001
+                    pass
+                st.success(f"✅ Pushed {len(rows)} items — receipt archived.")
+                st.balloons()
+                st.rerun()
+    with b3:
+        if st.button("🗑 Discard", key=f"disc2_{rid}"):
+            ss.discard(rid, ss.SCANNER_STAGE_TRANSLATED)
+            st.rerun()
+
+
+def _build_expense_rows(edited_items, receipt_date, shop, currency):
+    """Convert the edited item rows into expense-table records."""
+    from config import Columns
+
+    rows = []
+    for _, item in edited_items.iterrows():
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        qty = float(item.get("quantity", 1.0) or 1.0)
+        price = float(item.get("price", 0.0) or 0.0)
+        unit = str(item.get("quantity_unit", "pcs") or "pcs")
+        cat = str(item.get("category", "Groceries") or "Groceries")
+        sub = str(item.get("subcategory", "") or "")
+        rows.append({
+            Columns.DATE:           pd.to_datetime(receipt_date).date(),
+            Columns.EXPENSE_TYPE:   "Goods",
+            Columns.SHOP:           shop,
+            Columns.CATEGORY:       cat,
+            Columns.SUBCATEGORY:    sub,
+            Columns.ITEM:           name,
+            Columns.BRAND:          "",
+            Columns.QUANTITY:       qty,
+            Columns.QUANTITY_UNIT:  unit,
+            Columns.PRICE_PAID:     price,
+            Columns.CURRENCY:       currency,
+            Columns.PRICE_PER_UNIT: price / qty if qty > 0 else price,
+        })
+    return rows
+
+
+def _stage3_archive_ui(ss):
+    """Stage 3 — receipts archived after being pushed to the expense table."""
+    archive = ss.list_archive()
+    st.markdown(f"#### 📁 Archived receipts ({len(archive)})")
+    st.caption(
+        "Receipts whose data was pushed to the expense table. "
+        "Stored in the **Final** folder (local + Google Drive)."
+    )
+    if not archive:
+        st.info("No archived receipts yet.")
         return
-
-    st.markdown("---")
-    if st.button("💾 Save to Expense Tracker", type="primary"):
-        new_rows = []
-        for _, item in edited_items.iterrows():
-            item_name = str(item.get("name", "")).strip()
-            if not item_name:
-                continue
-            qty    = float(item.get("quantity",     1.0) or 1.0)
-            price  = float(item.get("price",        0.0) or 0.0)
-            unit   = str(item.get("quantity_unit", "pcs") or "pcs")
-            cat    = str(item.get("category", "Groceries") or "Groceries")
-            subcat = str(item.get("subcategory",    "") or "")
-            new_rows.append({
-                Columns.DATE:           pd.to_datetime(receipt_date).date(),
-                Columns.EXPENSE_TYPE:   "Goods",
-                Columns.SHOP:           shop,
-                Columns.CATEGORY:       cat,
-                Columns.SUBCATEGORY:    subcat,
-                Columns.ITEM:           item_name,
-                Columns.BRAND:          "",
-                Columns.QUANTITY:       qty,
-                Columns.QUANTITY_UNIT:  unit,
-                Columns.PRICE_PAID:     price,
-                Columns.CURRENCY:       parsed.get("currency", "SEK"),
-                Columns.PRICE_PER_UNIT: price / qty if qty > 0 else price,
-            })
-
-        if not new_rows:
-            st.error("No valid items to save (all rows were empty).")
-            return
-
-        updated_df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
-        save_fn(updated_df, sheet)
-
-        for key in ("ocr_parsed","ocr_text_sv","ocr_text_en","ocr_provider","ocr_ai_mode"):
-            st.session_state.pop(key, None)
-
-        st.success(f"✅ Added {len(new_rows)} items from receipt!")
-        st.balloons()
-
-        try:
-            from data_manager import bump_data_version
-            bump_data_version()
-        except Exception:
-            pass
-
-        st.rerun()
+    cols = st.columns(4)
+    for i, rec in enumerate(archive):
+        with cols[i % 4]:
+            with st.container(border=True):
+                _preview_receipt(
+                    ss, ss.SCANNER_STAGE_FINAL, rec["receipt_id"],
+                    rec["filename"], width=140,
+                )
+                st.caption(rec["original_name"])
 
 
 def _show_ocr_instructions():

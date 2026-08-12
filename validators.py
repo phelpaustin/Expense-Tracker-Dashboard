@@ -147,53 +147,77 @@ class ExpenseValidator:
             errors.append(f"❌ Missing required columns: {', '.join(missing_cols)}")
             return False, errors, df
         
-        # Validate each row
-        for idx, row in df.iterrows():
+        # Validate each row — vectorised masks (no per-row Python parsing).
+        date_raw = df["Date"]
+        etype_raw = df["ExpenseType"]
+        item_raw = df["Item"]
+
+        price_num = pd.to_numeric(df["PricePaid"], errors="coerce")
+        qty_num = pd.to_numeric(df["Quantity"], errors="coerce")
+        date_parsed = pd.to_datetime(date_raw, errors="coerce")
+        today = datetime.now().date()
+
+        # Missing-value masks (mirror the original semantics exactly: Date and
+        # ExpenseType use an exact empty-string test, Item also treats
+        # whitespace-only as missing).
+        missing_date = date_raw.isna() | (date_raw == "")
+        missing_type = etype_raw.isna() | (etype_raw == "")
+        missing_item = item_raw.isna() | (item_raw.astype(str).str.strip() == "")
+
+        # Price masks. NOTE: a genuine NaN/empty price is intentionally NOT an
+        # error (matches the original float()-based logic where float(nan) does
+        # not raise and nan comparisons are False). Only values that could not
+        # be parsed at all count as "Invalid price value".
+        price_unparseable = price_num.isna() & ~df["PricePaid"].isna()
+        price_nonpos = price_num.notna() & (price_num <= 0)
+        price_high = price_num.notna() & (price_num > ExpenseValidator.MAX_PRICE)
+
+        qty_unparseable = qty_num.isna() & ~df["Quantity"].isna()
+        qty_nonpos = qty_num.notna() & (qty_num <= 0)
+
+        # Date-format checks run whenever the raw value is not NaN (an empty
+        # string still reaches this block, as in the original).
+        has_date_val = ~date_raw.isna()
+        date_invalid = has_date_val & date_parsed.isna()
+        date_future = has_date_val & date_parsed.notna() & (date_parsed.dt.date > today)
+
+        any_error = (
+            missing_date | missing_type | missing_item
+            | price_unparseable | price_nonpos | price_high
+            | qty_unparseable | qty_nonpos
+            | date_invalid | date_future
+        )
+
+        # Assemble messages only for the (few) invalid rows.
+        for idx in df.index[any_error]:
             row_errors = []
-            
-            # Check for missing critical data
-            if pd.isna(row.get("Date")) or row.get("Date") == "":
+            if missing_date[idx]:
                 row_errors.append("Missing date")
-            
-            if pd.isna(row.get("ExpenseType")) or row.get("ExpenseType") == "":
+            if missing_type[idx]:
                 row_errors.append("Missing expense type")
-            
-            if pd.isna(row.get("Item")) or not str(row.get("Item", "")).strip():
+            if missing_item[idx]:
                 row_errors.append("Missing item name")
-            
-            # Validate price
-            try:
-                price = float(row.get("PricePaid", 0))
-                if price <= 0:
-                    row_errors.append(f"Invalid price: {price}")
-                elif price > ExpenseValidator.MAX_PRICE:
-                    row_errors.append(f"Price too high: {price:,.2f}")
-            except (ValueError, TypeError):
+
+            if price_unparseable[idx]:
                 row_errors.append("Invalid price value")
-            
-            # Validate quantity
-            try:
-                qty = float(row.get("Quantity", 0))
-                if qty <= 0:
-                    row_errors.append(f"Invalid quantity: {qty}")
-            except (ValueError, TypeError):
+            elif price_nonpos[idx]:
+                row_errors.append(f"Invalid price: {price_num[idx]}")
+            elif price_high[idx]:
+                row_errors.append(f"Price too high: {price_num[idx]:,.2f}")
+
+            if qty_unparseable[idx]:
                 row_errors.append("Invalid quantity value")
-            
-            # Validate date format
-            if not pd.isna(row.get("Date")):
-                try:
-                    date_val = pd.to_datetime(row["Date"], errors="coerce")
-                    if pd.isna(date_val):
-                        row_errors.append("Invalid date format")
-                    elif date_val.date() > datetime.now().date():
-                        row_errors.append("Date in future")
-                except (ValueError, TypeError):
-                    row_errors.append("Cannot parse date")
-            
-            if row_errors:
-                invalid_indices.append(idx)
-                errors.append(f"Row {idx + 1}: {', '.join(row_errors)}")
-        
+            elif qty_nonpos[idx]:
+                row_errors.append(f"Invalid quantity: {qty_num[idx]}")
+
+            if date_invalid[idx]:
+                row_errors.append("Invalid date format")
+            elif date_future[idx]:
+                row_errors.append("Date in future")
+
+            invalid_indices.append(idx)
+            errors.append(f"Row {idx + 1}: {', '.join(row_errors)}")
+
         # Create DataFrame of invalid rows
         invalid_rows = df.loc[invalid_indices] if invalid_indices else pd.DataFrame()
         

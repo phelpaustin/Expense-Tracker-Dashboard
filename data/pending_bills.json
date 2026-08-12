@@ -1,0 +1,20 @@
+[
+  {
+    "bill_id": "6ab61cb8",
+    "date": "2026-07-14",
+    "shop": "ICA MAXI Supermarket V\u00e4stra Hamnen",
+    "currency": "SEK",
+    "total_amount": 329.5,
+    "note": "",
+    "receipt": {
+      "file_id": null,
+      "web_link": null,
+      "local_path": "receipts/ICA_MAXI_Supermarket_V\u00e4stra_Hamnen_2026-07-14_6ab61cb8.pdf",
+      "filename": "ICA_MAXI_Supermarket_V\u00e4stra_Hamnen_2026-07-14_6ab61cb8.pdf",
+      "storage": "local"
+    },
+    "status": "pending",
+    "created_at": "2026-07-15T10:25:24",
+    "itemised_at": null
+  }
+]

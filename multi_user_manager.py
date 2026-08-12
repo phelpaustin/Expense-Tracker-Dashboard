@@ -8,7 +8,8 @@ import hashlib
 import secrets
 import pandas as pd
 import streamlit as st
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from config import Columns
@@ -19,23 +20,41 @@ DEFAULT_USERS = [
     {"id": "user_1", "name": "Owner", "color": "#6366f1", "role": "admin", "password_hash": None}
 ]
 
+from json_store import JsonStore
+_USERS_STORE = JsonStore(USERS_FILE, default=DEFAULT_USERS, sync=False)
+
 
 # ============================================================
 # STORAGE
 # ============================================================
 def load_users() -> list:
-    path = Path(USERS_FILE)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return DEFAULT_USERS
-    return DEFAULT_USERS
+    return _USERS_STORE.load()
 
 
 def save_users(users: list):
-    Path(USERS_FILE).parent.mkdir(parents=True, exist_ok=True)
-    Path(USERS_FILE).write_text(json.dumps(users, indent=2))
+    _USERS_STORE.save(users)
+
+
+def _pbkdf2(password: str, salt: str) -> bytes:
+    """Derive a PBKDF2-HMAC-SHA256 key (the CPU-heavy primitive)."""
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations=260_000,
+    )
+
+
+# A single shared worker thread runs the ~100 ms PBKDF2 derivation off the
+# Streamlit script-run thread.  ``hashlib.pbkdf2_hmac`` releases the GIL while
+# it computes, so offloading keeps the server responsive to other concurrent
+# user sessions during login / signup instead of blocking the whole process.
+# We still ``.result()`` because the caller needs the hash synchronously.
+_hash_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pbkdf2")
+
+
+def _derive_key(password: str, salt: str) -> bytes:
+    return _hash_executor.submit(_pbkdf2, password, salt).result()
 
 
 def hash_password(password: str) -> str:
@@ -45,15 +64,14 @@ def hash_password(password: str) -> str:
     The returned string has the format ``{salt_hex}:{derived_key_hex}`` so
     both pieces are stored together in a single ``password_hash`` field.
     260 000 iterations matches NIST SP 800-132 (2023) guidance.
+
+    NOTE: the derivation costs ~100 ms by design; it is run on a shared worker
+    thread (see :data:`_hash_executor`) so it does not stall other sessions.
     """
     salt = secrets.token_hex(32)          # 32 bytes → 64 hex chars
-    key = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        iterations=260_000,
-    )
+    key = _derive_key(password, salt)
     return f"{salt}:{key.hex()}"
+
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
@@ -74,12 +92,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
         # New PBKDF2 format
         try:
             salt, key_hex = stored_hash.split(":", 1)
-            expected = hashlib.pbkdf2_hmac(
-                "sha256",
-                password.encode("utf-8"),
-                salt.encode("utf-8"),
-                iterations=260_000,
-            )
+            expected = _derive_key(password, salt)
             # Use hmac.compare_digest to prevent timing attacks
             return hmac.compare_digest(expected.hex(), key_hex)
         except Exception:
@@ -118,9 +131,16 @@ def authenticate_user(name: str, password: str) -> Optional[dict]:
     users = load_users()
     for user in users:
         if user["name"] == name:
-            if user.get("password_hash") is None:
+            stored = user.get("password_hash")
+            if stored is None:
                 return user
-            if verify_password(password, user["password_hash"]):
+            if verify_password(password, stored):
+                # Transparently upgrade legacy unsalted SHA-256 hashes to the
+                # current PBKDF2 format on successful login so old records do
+                # not linger in a weaker format.
+                if ":" not in stored:
+                    user["password_hash"] = hash_password(password)
+                    save_users(users)
                 return user
     return None
 
@@ -157,13 +177,31 @@ def require_login():
     selected_name = st.selectbox("Select User", names)
     password = st.text_input("Password (leave blank if not set)", type="password")
 
+    # Simple in-session throttling to slow down password guessing.
+    attempts = st.session_state.get("_login_attempts", 0)
+    locked_until = st.session_state.get("_login_locked_until")
+    now = datetime.now()
+    if locked_until and now < locked_until:
+        wait = int((locked_until - now).total_seconds())
+        st.error(f"🔒 Too many failed attempts. Try again in {wait}s.")
+        return False
+
     if st.button("Sign In", type="primary"):
         result = authenticate_user(selected_name, password)
         if result:
+            st.session_state["_login_attempts"] = 0
+            st.session_state.pop("_login_locked_until", None)
             set_current_user(result)
             st.rerun()
         else:
-            st.error("❌ Incorrect password")
+            attempts += 1
+            st.session_state["_login_attempts"] = attempts
+            if attempts >= 5:
+                st.session_state["_login_locked_until"] = now + timedelta(seconds=30)
+                st.session_state["_login_attempts"] = 0
+                st.error("🔒 Too many failed attempts. Locked for 30s.")
+            else:
+                st.error(f"❌ Incorrect password ({5 - attempts} attempt(s) left)")
 
     return False
 

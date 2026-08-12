@@ -2,9 +2,13 @@ import pandas as pd
 import json
 import os
 
+# Resolve paths relative to the project root (one level up from scripts/)
+# so the script works regardless of the current working directory.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # ---- Config ----
-EXCEL_FILE = "expenses_export.xlsx"  # your file
-OUTPUT_FILE = "data/dropdown_options.json"
+EXCEL_FILE = os.path.join(_ROOT, "expenses_export.xlsx")  # your file
+OUTPUT_FILE = os.path.join(_ROOT, "data", "dropdown_options.json")
 
 
 def build_dropdown_from_excel(file_path):

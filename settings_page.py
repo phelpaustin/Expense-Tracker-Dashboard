@@ -10,43 +10,17 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
+# Persistence now lives in settings_manager (single source of truth).
+# Re-exported here so existing imports like
+# ``from settings_page import load_alert_settings`` keep working.
+from settings_manager import (
+    ALERT_SETTINGS_FILE as SETTINGS_FILE,
+    load_alert_settings,
+    save_alert_settings,
+    get_default_alert_settings as get_default_settings,
+)
+
 load_dotenv()
-
-SETTINGS_FILE = "data/alert_settings.json"
-
-
-def load_alert_settings():
-    """Load alert preferences from file."""
-    path = Path(SETTINGS_FILE)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except:
-            return get_default_settings()
-    return get_default_settings()
-
-
-def save_alert_settings(settings):
-    """Save alert preferences to file."""
-    path = Path(SETTINGS_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2))
-
-
-def get_default_settings():
-    """Return default alert settings."""
-    return {
-        "alerts_enabled": True,
-        "threshold_80": True,
-        "threshold_90": True,
-        "threshold_100": True,
-        "predictive_alerts": True,
-        "velocity_alerts": True,
-        "daily_summary_enabled": False,
-        "daily_summary_time": "18:00",
-        "weekly_summary_enabled": False,
-        "desktop_notifications": False,
-    }
 
 
 def render_settings_page(df=None):
@@ -176,7 +150,7 @@ def render_settings_page(df=None):
                         if success:
                             st.success("✅ Test email sent! Check your inbox.")
                         else:
-                            st.error("❌ Failed {error}. Check your .env file.")
+                            st.error(f"❌ Failed {error}. Check your .env file.")
                     except ImportError:
                         st.error("❌ notification_manager.py not found")
             
@@ -194,7 +168,7 @@ def render_settings_page(df=None):
                         if success:
                             st.success("✅ Alert email sent!")
                         else:
-                            st.error("❌ Failed: {error}")
+                            st.error(f"❌ Failed: {error}")
                     except ImportError:
                         st.error("❌ notification_manager.py not found")
             

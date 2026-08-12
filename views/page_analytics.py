@@ -13,7 +13,7 @@ from config import Columns
 from date_utils import normalize_dataframe_dates
 from charts import category_pie, monthly_spending, stacked_area_chart, multi_year_comparison, calendar_heatmap
 from analytics import monthly_trends, category_insights
-from page_helpers import hero, monthly_bar_chart
+from page_helpers import hero, monthly_bar_chart, empty_state
 import feature_flags as ff
 
 
@@ -27,7 +27,7 @@ def render(df: pd.DataFrame, t: dict, **_) -> None:
     hero("Analytics & Trends", "Historical spending breakdown and forecasts", "📊")
 
     if df.empty:
-        st.info("No data available yet.")
+        empty_state("No data available yet. Add expenses to see analytics and trends.")
         return
 
     # ── Date preparation ───────────────────────────────────────

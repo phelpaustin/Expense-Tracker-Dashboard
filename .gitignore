@@ -1,0 +1,25 @@
+credentials.json
+oauth_client.json
+token.json
+__pycache__/*
+logs/
+ExpenseTracker.xlsx
+expenses_local.csv
+*.pyc
+__pycache__/
+
+# Virtual environment
+.venv/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Editor / dev config
+.vscode/
+.agents/
+
+# Personal data
+receipts/
+scanner/
+data/backups/
+docs/

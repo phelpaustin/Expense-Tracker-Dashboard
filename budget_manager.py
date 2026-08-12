@@ -7,56 +7,45 @@ import json
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
 from config import Columns
+from theme import get_chart_theme
 from ai_insights import _get_keys, _call_ai
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# THEME SUPPORT
+# THEME SUPPORT — single source of truth lives in theme.py
 # ══════════════════════════════════════════════════════════════════════════
-_THEME_PALETTES = {
-    "☀️ Light":    {"paper": "#ffffff", "card": "#ffffff", "text": "#475569", "muted": "#94a3b8", "fg": "#0f172a", "border": "#e2e8f0",  "accent": "#6366f1", "bar_bg": "#f1f5f9"},
-    "🌑 Dark":     {"paper": "#1e293b", "card": "#1e293b", "text": "#94a3b8", "muted": "#64748b", "fg": "#f1f5f9", "border": "#334155",  "accent": "#818cf8", "bar_bg": "#334155"},
-    "🌊 Ocean":    {"paper": "#f0f9ff", "card": "#e0f2fe", "text": "#0369a1", "muted": "#38bdf8", "fg": "#0c4a6e", "border": "#bae6fd",  "accent": "#0284c7", "bar_bg": "#bae6fd"},
-    "🌿 Forest":   {"paper": "#f0fdf4", "card": "#dcfce7", "text": "#15803d", "muted": "#4ade80", "fg": "#14532d", "border": "#bbf7d0",  "accent": "#16a34a", "bar_bg": "#bbf7d0"},
-    "🌅 Sunset":   {"paper": "#fff7ed", "card": "#ffedd5", "text": "#c2410c", "muted": "#fb923c", "fg": "#7c2d12", "border": "#fed7aa",  "accent": "#ea580c", "bar_bg": "#fed7aa"},
-    "🌙 Midnight": {"paper": "#13131f", "card": "#13131f", "text": "#a5b4fc", "muted": "#4f4f7a", "fg": "#e2e2ff", "border": "#1e1e3f",  "accent": "#7c3aed", "bar_bg": "#1e1e3f"},
-    "🌸 Rose":     {"paper": "#fff1f2", "card": "#ffe4e6", "text": "#be123c", "muted": "#fb7185", "fg": "#881337", "border": "#fecdd3",  "accent": "#e11d48", "bar_bg": "#fecdd3"},
-    "⬜ Slate":    {"paper": "#ffffff", "card": "#f1f5f9", "text": "#475569", "muted": "#94a3b8", "fg": "#1e293b", "border": "#cbd5e1",  "accent": "#64748b", "bar_bg": "#e2e8f0"},
-}
 
 # Special key used to store the total monthly budget inside budgets.json
 TOTAL_BUDGET_KEY = "__total_monthly__"
+# Sentinel key holding the flexible-budget config (period + rollover).
+BUDGET_CONFIG_KEY = "__config__"
+# Aliases so the flexible-period helpers read clearly.
+_date = date
+_timedelta = timedelta
 
 
 def _t() -> dict:
-    name = st.session_state.get("theme_name", "☀️ Light")
-    return _THEME_PALETTES.get(name, _THEME_PALETTES["☀️ Light"])
+    return get_chart_theme()
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # BUDGET STORAGE
 # ══════════════════════════════════════════════════════════════════════════
 BUDGET_FILE = "data/budgets.json"
+from json_store import JsonStore
+_STORE = JsonStore(BUDGET_FILE, default={}, sync=True)
 
 
 def load_budgets() -> dict:
-    path = Path(BUDGET_FILE)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return {}
-    return {}
+    return _STORE.load()
 
 
 def save_budgets(budgets: dict) -> None:
-    path = Path(BUDGET_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(budgets, indent=2))
+    _STORE.save(budgets)
 
 
 def get_total_monthly_budget() -> Optional[float]:
@@ -77,8 +66,119 @@ def set_total_monthly_budget(amount: float) -> None:
 
 
 def _category_budgets_only(budgets: dict) -> dict:
-    """Return budgets dict without the total-monthly sentinel key."""
-    return {k: v for k, v in budgets.items() if k != TOTAL_BUDGET_KEY}
+    """Return budgets dict without the total-monthly / config sentinel keys."""
+    return {k: v for k, v in budgets.items() if k not in (TOTAL_BUDGET_KEY, BUDGET_CONFIG_KEY)}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FLEXIBLE BUDGET PERIODS  (weekly / monthly / annual + rollover)
+# ══════════════════════════════════════════════════════════════════════════
+# Config lives under a sentinel key in budgets.json. Default = Monthly, no
+# rollover → identical to the previous monthly-only behaviour.
+BUDGET_PERIODS = ["Weekly", "Monthly", "Annual"]
+
+
+def get_budget_config() -> dict:
+    cfg = load_budgets().get(BUDGET_CONFIG_KEY) or {}
+    period = cfg.get("period")
+    return {
+        "period": period if period in BUDGET_PERIODS else "Monthly",
+        "rollover": bool(cfg.get("rollover", False)),
+    }
+
+
+def set_budget_config(period: str, rollover: bool) -> None:
+    budgets = load_budgets()
+    budgets[BUDGET_CONFIG_KEY] = {
+        "period": period if period in BUDGET_PERIODS else "Monthly",
+        "rollover": bool(rollover),
+    }
+    save_budgets(budgets)
+
+
+def current_period_range(period_type: str, when: _date = None):
+    """Return ``(start, end, label, total_days)`` for the period containing *when*."""
+    when = when or _date.today()
+    if period_type == "Weekly":
+        start = when - _timedelta(days=when.weekday())      # Monday
+        end = start + _timedelta(days=6)
+        label = f"Week of {start:%b %d}"
+    elif period_type == "Annual":
+        start = _date(when.year, 1, 1)
+        end = _date(when.year, 12, 31)
+        label = str(when.year)
+    else:  # Monthly
+        start = when.replace(day=1)
+        if when.month == 12:
+            end = _date(when.year, 12, 31)
+        else:
+            end = _date(when.year, when.month + 1, 1) - _timedelta(days=1)
+        label = f"{when:%B %Y}"
+    return start, end, label, (end - start).days + 1
+
+
+def spending_in_range(df: pd.DataFrame, start: _date, end: _date) -> float:
+    """Total spending with a date in [start, end]."""
+    if df is None or df.empty:
+        return 0.0
+    d = df.copy()
+    d[Columns.PRICE_PAID] = pd.to_numeric(d[Columns.PRICE_PAID], errors="coerce").fillna(0)
+    d[Columns.DATE] = pd.to_datetime(d[Columns.DATE], errors="coerce")
+    d = d.dropna(subset=[Columns.DATE])
+    mask = (d[Columns.DATE].dt.date >= start) & (d[Columns.DATE].dt.date <= end)
+    return float(d.loc[mask, Columns.PRICE_PAID].sum())
+
+
+def rollover_available(df: pd.DataFrame, budget: float, period_type: str,
+                       current_start: _date, lookback: int = 24) -> float:
+    """
+    Net unspent budget carried from prior periods (only over periods within the
+    recorded data range, so a fresh dataset doesn't fabricate huge surpluses).
+    Can be negative when past periods overspent.
+    """
+    if not budget or budget <= 0 or df is None or df.empty:
+        return 0.0
+    dates = pd.to_datetime(df[Columns.DATE], errors="coerce").dropna()
+    if dates.empty:
+        return 0.0
+    earliest = dates.min().date()
+    carry = 0.0
+    cursor_start = current_start
+    for _ in range(lookback):
+        prev_end = cursor_start - _timedelta(days=1)
+        if prev_end < earliest:
+            break
+        p_start, p_end, _lbl, _tot = current_period_range(period_type, prev_end)
+        carry += budget - spending_in_range(df, p_start, p_end)
+        cursor_start = p_start
+    return round(carry, 2)
+
+
+def period_budget_status(df: pd.DataFrame) -> Optional[dict]:
+    """
+    Current-period budget status honouring the configured period + rollover.
+    Returns None when no total budget is set.
+    """
+    budget = get_total_monthly_budget()   # amount is per the configured period
+    if not budget:
+        return None
+    cfg = get_budget_config()
+    start, end, label, total_days = current_period_range(cfg["period"])
+    spent = spending_in_range(df, start, end)
+    roll = rollover_available(df, budget, cfg["period"], start) if cfg["rollover"] else 0.0
+    effective = budget + roll
+    remaining = effective - spent
+    pct = (spent / effective * 100) if effective > 0 else 0
+    today = _date.today()
+    days_elapsed = max((min(today, end) - start).days + 1, 1)
+    projected = (spent / days_elapsed) * total_days
+    return {
+        "period": cfg["period"], "label": label, "budget": budget,
+        "rollover": roll, "effective": effective, "spent": spent,
+        "remaining": remaining, "pct": pct, "projected": projected,
+        "days_total": total_days, "days_elapsed": days_elapsed,
+        "days_remaining": max(total_days - days_elapsed, 0),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -291,6 +391,55 @@ def _render_budget_alerts(statuses: list):
 # ══════════════════════════════════════════════════════════════════════════
 # MAIN UI FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════
+def _render_period_budget_card(df: pd.DataFrame):
+    """Current-period budget hero honouring the configured period + rollover."""
+    stt = period_budget_status(df)
+    if not stt:
+        return
+    t = _t()
+    pct = min(stt["pct"], 100)
+    status = ("exceeded" if stt["pct"] >= 100 else "warning" if stt["pct"] >= 85
+              else "caution" if stt["pct"] >= 60 else "ok")
+    color = _status_color(status)
+    icon = {"ok": "✅", "caution": "🟡", "warning": "🟠", "exceeded": "🔴"}.get(status, "⚪")
+    proj_color = "#ef4444" if stt["projected"] > stt["effective"] else "#22c55e"
+
+    roll_line = ""
+    if stt["rollover"]:
+        rc = "#22c55e" if stt["rollover"] >= 0 else "#ef4444"
+        roll_line = (
+            f'<div style="font-size:0.8rem;color:{t["muted"]};margin-top:0.4rem;">'
+            f'Rollover carried: <span style="color:{rc};font-weight:600;">{stt["rollover"]:+,.0f} SEK</span> '
+            f'→ effective budget {stt["effective"]:,.0f} SEK</div>'
+        )
+
+    m1 = _metric_box("Projected", f'{stt["projected"]:,.0f}', "SEK", proj_color, t["muted"])
+    m2 = _metric_box("Remaining", f'{stt["remaining"]:,.0f}', "SEK", color, t["muted"])
+    m3 = _metric_box("Days Left", str(stt["days_remaining"]), f'of {stt["days_total"]}', t["fg"], t["muted"])
+
+    st.markdown(
+        f'<div style="background:{t["card"]};border:2px solid {color};border-radius:16px;'
+        f'padding:1.6rem 2rem;margin-bottom:1.25rem;box-shadow:0 4px 20px rgba(0,0,0,0.07);">'
+        f'<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;">'
+        f'<div style="flex:1;min-width:220px;">'
+        f'<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:{t["muted"]};margin-bottom:0.3rem;">'
+        f'{icon} {stt["period"]} Budget · {stt["label"]}</div>'
+        f'<div style="font-size:2.4rem;font-weight:800;color:{t["fg"]};line-height:1.1;">'
+        f'{stt["spent"]:,.0f} <span style="font-size:1.1rem;font-weight:500;color:{t["muted"]}">/ {stt["effective"]:,.0f} SEK</span></div>'
+        f'<div style="margin-top:0.8rem;background:{t["bar_bg"]};border-radius:999px;height:12px;overflow:hidden;">'
+        f'<div style="background:{color};width:{pct:.1f}%;height:100%;border-radius:999px;"></div></div>'
+        f'<div style="margin-top:0.5rem;font-size:0.85rem;color:{color};font-weight:600;">'
+        f'{stt["pct"]:.1f}% used · <span style="color:{t["muted"]};font-weight:400;">{stt["remaining"]:,.0f} SEK remaining</span></div>'
+        f'{roll_line}'
+        f'</div>'
+        f'<div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:center;">'
+        f'{m1}{m2}{m3}'
+        f'</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def budget_dashboard_ui(df: pd.DataFrame):
     """Main budget dashboard — month selector, total budget hero card, then category cards."""
     st.markdown("### 📊 Budget Dashboard")
@@ -302,6 +451,13 @@ def budget_dashboard_ui(df: pd.DataFrame):
     if not total_budget and not cat_budgets:
         st.info("💡 No budgets set yet. Switch to the **Setup** tab to create your first budget!")
         return
+
+    # ── Flexible-period hero (only when not the default monthly / rollover on) ──
+    _cfg = get_budget_config()
+    if total_budget and (_cfg["period"] != "Monthly" or _cfg["rollover"]):
+        _render_period_budget_card(df)
+        st.caption("Showing your configured budget period. The monthly view below is unchanged.")
+        st.markdown("---")
 
     # ── Month selector ─────────────────────────────────────────────────────
     available_months = get_available_months(df)
@@ -413,6 +569,36 @@ def budget_setup_ui(df: pd.DataFrame):
                 st.success(f"✅ Total monthly budget set to **{new_total:,.0f} SEK**")
             else:
                 st.info("Total monthly budget cleared.")
+            st.rerun()
+
+    # ── Budget period & rollover ──────────────────────────────────────────
+    st.markdown("#### 🗓️ Budget Period & Rollover")
+    st.caption("Track your total budget weekly, monthly, or annually — and optionally carry unspent budget forward.")
+    _cfg = get_budget_config()
+    pc1, pc2 = st.columns([2, 1])
+    with pc1:
+        sel_period = st.selectbox(
+            "Budget period",
+            BUDGET_PERIODS,
+            index=BUDGET_PERIODS.index(_cfg["period"]),
+            help="Your total budget amount is interpreted per this period.",
+            key="budget_period_sel",
+        )
+    with pc2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        sel_rollover = st.checkbox(
+            "🔁 Rollover unspent",
+            value=_cfg["rollover"],
+            help="Carry each period's leftover (or overspend) into the next.",
+            key="budget_rollover_chk",
+        )
+    if sel_period != _cfg["period"] or sel_rollover != _cfg["rollover"]:
+        if st.button("💾 Save Period Settings", key="save_budget_period"):
+            set_budget_config(sel_period, sel_rollover)
+            st.success(
+                f"✅ Budget period set to **{sel_period}**"
+                + (" with rollover" if sel_rollover else "")
+            )
             st.rerun()
 
     if current_total:
@@ -566,13 +752,13 @@ def _ai_budget_suggestions(df: pd.DataFrame) -> None:
         df2 = df.copy()
         df2[Columns.DATE] = pd.to_datetime(df2[Columns.DATE], errors="coerce")
         df2[Columns.PRICE_PAID] = pd.to_numeric(df2[Columns.PRICE_PAID], errors="coerce").fillna(0)
-        df2["YM"] = df2[Columns.DATE].dt.to_period("M").astype(str)
+        df2[Columns.YEAR_MONTH] = df2[Columns.DATE].dt.to_period("M").astype(str)
 
-        recent_3 = sorted(df2["YM"].unique())[-3:]
-        df3 = df2[df2["YM"].isin(recent_3)]
+        recent_3 = sorted(df2[Columns.YEAR_MONTH].unique())[-3:]
+        df3 = df2[df2[Columns.YEAR_MONTH].isin(recent_3)]
 
         monthly_by_cat = (
-            df3.groupby(["YM", Columns.CATEGORY])[Columns.PRICE_PAID]
+            df3.groupby([Columns.YEAR_MONTH, Columns.CATEGORY])[Columns.PRICE_PAID]
             .sum().unstack(fill_value=0)
         )
 
